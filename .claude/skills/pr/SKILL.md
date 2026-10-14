@@ -1,7 +1,7 @@
 ---
 name: pr
 description: >
-  Create a pull request from the current branch for claude-statusline, into
+  Create a pull request from the current branch for statusbox, into
   the right base for this repo's two-tier flow — feature branches
   (`dev-<feature>`) target `dev`, and `dev` itself targets `master` as a
   release PR. Analyzes the new
@@ -32,7 +32,7 @@ Every command below that references "the base" means whichever of those was just
 
 Past PRs in this repo used a body of just `## Summary` + `## Test plan` — no separate "Changes" section, no conventional-commit-style title enforcement. This skill keeps that convention regardless of which base it's targeting. It also bakes in the checks this project's CLAUDE.md calls out explicitly, chief among them a sensitive-content scan: this is a tool that runs on every user's machine, so a hardcoded personal path or leaked credential is a real bug, not a hypothetical.
 
-**There is CI, and there is a test suite.** `ci.yml` runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` and the self-check on ubuntu-24.04, macos-15 and windows-2025 for every push and PR. Step 7 waits on it. The manual test-plan checklist is still produced, because the things it lists — a rendered box, a toast appearing, a hook firing in a live session — are the ones no automated gate covers, and this project's history is that those are where the bugs are.
+**There is CI, and there is a test suite.** `ci.yml` installs Claude Code and runs `claude plugin validate .` and `claude plugin test .` on ubuntu-24.04, macos-15 and windows-2025 for every push and PR. Step 7 waits on it. The manual test-plan checklist is still produced, because the things it lists — a rendered box, a toast appearing, a hook firing in a live session — are the ones no automated gate covers, and this project's history is that those are where the bugs are.
 
 ## Step 1 — Pre-flight checks
 
@@ -93,12 +93,12 @@ git diff --stat origin/<base>..HEAD
 git diff --name-only origin/<base>..HEAD | awk -F/ '{print $1}' | sort | uniq -c | sort -rn
 ```
 
-Group by area: `src/` (the crate), `install/` (the installers), `tests/`, `docs/`, `.github/`, plus `README.md`, `CLAUDE.md`, `Cargo.toml`. Watch for what CLAUDE.md calls out:
+Group by area: `hooks/` (the plugin's modules), `types/` (its state contract), `tests/`, `.claude-plugin/` (manifest and marketplace), `.github/`, plus `README.md`, `CLAUDE.md`. Watch for what CLAUDE.md calls out:
 
-- **Platform-conditional code:** a new `cfg!(windows)` or `#[cfg(unix)]` outside the four confined areas is a design error, not a style one. `platform_conditional_code_stays_in_its_areas` enforces it, so CI catches it — but flag it in the preview so the reviewer knows a behaviour got branched rather than decided.
-- **`exit` added to `install.*`/`uninstall.*`:** these run via `irm | iex` and `curl | bash` in the user's live shell, where `exit` closes their session. Flag any new occurrence.
-- **Silent degradation:** every per-tick subcommand must exit 0 and write nothing to stderr. Flag any new code path that could break it, and remember that a break here is invisible in testing — it shows up as an absent status line with no error.
-- **Published paths:** if the diff moves anything under `install/` or `assets/`, the README URLs pointing at it move too. A stale raw URL 404s *silently* through `curl -fsSL | bash` — no error, no install, exit 0.
+- **Platform branches:** a new `OS === 'Windows_NT'` check outside the areas CLAUDE.md confines them to is a design error, not a style one. Flag it in the preview so the reviewer knows a behaviour got branched rather than decided.
+- **A hook that can break the session:** every hook must call `next(e)` and return what it resolves to unless it means to answer for the engine, and nothing a hook awaits may throw past it. Flag new code that could, and remember the failure is quiet: the engine skips the hook and the box simply stops updating.
+- **A new per-tick cost:** a subprocess or a file read added to the 1-second clock, or to a hook that fires on every request, is a regression even when the output is right.
+- **The manifest:** a changed `name` in `.claude-plugin/plugin.json` or `marketplace.json` changes the install line every user typed, and the `$.state` keys.
 
 **Sensitive-content scan (blocking).** Inspect the diff:
 
@@ -109,75 +109,49 @@ git diff origin/<base>..HEAD | grep -nE "\.env|SECRET|PRIVATE KEY|BEGIN .*PRIVAT
 - Secrets/credentials, private key blocks, hardcoded API keys or tokens.
 - A hardcoded absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`) instead of `$HOME`/`~`/`$env:USERPROFILE` — this tool runs on other people's machines, so that's a real bug, not just a leak risk.
 
-Expect false positives from Rust and Win32 identifiers (`TOKEN_QUERY`, `ends_the_token`, `cmd.env(...)`) and from synthetic test fixtures (`/home/fixture/...`, `C:/Users/me/...`). Read each hit rather than counting them. If a real one is found, warn prominently and require explicit acknowledgment before creating the PR.
+Expect false positives from identifiers (`isStdoutTruncated`, `$.env.get(...)`) and from synthetic test fixtures (`/home/me/...`, `C:\\home\\me\\...`). Read each hit rather than counting them. If a real one is found, warn prominently and require explicit acknowledgment before creating the PR.
 
 ## Step 2.5 — Release PRs: version and notes
 
-**Skip this entirely when the base is `dev`.** When the base is `master`, this PR is the thing that becomes a published release, so settle the version and write the notes *here* — at tag time it is too late to change your mind cheaply.
-
-**Pushing the tag IS the release.** `release.yml` triggers on tag push, builds all six targets, attests them, and publishes under the user's name. There is no review step between the tag and the artifacts appearing. **Never push a tag without explicit approval for that specific tag** — approval for one tag is not approval for the next, and "the plan says publish" is not approval.
+**Skip this entirely when the base is `dev`.** When the base is `master`, this PR is the release: `master` is what `/plugin install statusbox --marketplace axlaser/statusbox` fetches and what `claude plugin update` moves people to. **Merging it publishes it**, with no review step between the merge and every user's next update, so settle the version and the notes *here*.
 
 ### Settle the version
 
-Gather the facts first:
-
 ```bash
-grep -m1 '^version' Cargo.toml
+grep -m1 '"version"' .claude-plugin/plugin.json
 git tag --sort=-v:refname | head -5
-gh release list --limit 5
 ```
 
-Then AskUserQuestion with the concrete candidate tags — `v1.2.3`, `v1.3.0`, `v2.0.0` — not abstract semver terms, and give each a one-line justification drawn from the diff just analysed. In this repo a **breaking** change usually means a published URL moved, an installed path changed, or a `settings.json` entry changed shape — not an API signature, since there is no public API.
+Then AskUserQuestion with concrete candidates — `2.1.0`, `2.0.1`, `3.0.0` — each with a one-line justification drawn from the diff. In this repo a **breaking** change usually means the install line changed (the plugin's or the marketplace's `name`), a `$.state` key was renamed (a running session's state is lost on reload), or the minimum Claude Code version rose. The bump goes in `.claude-plugin/plugin.json` in *this* PR: Claude Code compares that version to decide an update exists.
 
 ### Write the release notes — do not just check for them
 
-`docs/releases/<tag>.md` is what the release publishes. **If it does not exist, write it as part of this PR.** Never open a release PR that leaves it for later: nobody remembers, and the failure is silent — the release publishes successfully, looks completely normal, and carries the verification boilerplate instead of anything anyone wrote.
-
-Build the draft from what actually shipped:
-
-```bash
-git log --oneline <previous-release-tag>..HEAD
-gh release view <prerelease-tag> --json body --jq .body   # if an RC covered this version
-```
-
-If a prerelease of the same version already has notes, start from those and drop the candidate framing — it is the same release, and rewriting from scratch invites drift between what the RC promised and what ships.
-
-Write it for the person installing it, not the person who wrote it:
-
-- **What changed**, led by what it means for them rather than by the commit list.
-- **Anything breaking**, stated plainly, with the failure mode spelled out if they do nothing — especially when the failure is silent.
-- **How to install**, including the prerelease channel if one is relevant.
-- **How to verify the download** — checksum, and provenance when a verifier is available.
-- **How to report a problem**, given the tool is built to fail silently: name the self-check and `STATUSLINE_DEBUG` so a user has something to send.
-
-No changelog dump. A reader wants to know whether to upgrade and what it will cost them.
-
-**Show the draft in full and get approval before committing it.** It is the text that lands on the release page under the user's name; it should read like it was written on purpose. Commit it through the `commit` skill along with any version bump, so it is in the PR rather than trailing it.
+`docs/releases/<version>.md` holds them. **If it does not exist, write it as part of this PR**: what changed for the person using the plugin, anything they must do (a newer Claude Code, a setting), and how to report a problem (`claude --debug`, and the dim `statusbox:` lines in the transcript). No changelog dump. Show the draft in full and get approval before committing it through the `commit` skill.
 
 ### Then verify, in this order
 
-1. **`Cargo.toml` matches the intended tag.** The workflow's `version` job compares them and fails the release when they disagree. `v1.2.3` and `v1.2.3-rc.1` both claim crate version `1.2.3`. If it doesn't match, the bump belongs in *this* PR.
-2. **`docs/releases/<tag>.md` exists** — either it already did, or it was just written above.
-3. **A prerelease of this version has been published and installed from.** Resolve, checksum, attestation, placement, self-check and the settings rewrite are only exercised by installing from a real release. A stable tag is an expensive place to discover a problem in that chain.
-4. **Deliberate release blocks in `release.yml` have been dealt with.** A gate that refuses stable tags exists so a release cannot happen by accident; lifting one is a decision that belongs in the release PR where it can be seen and argued with, not a quiet edit at tag time.
-5. **CI is green on all three platforms**, and any manual gate the release depends on has been *recorded* — naming the version tested and what was actually observed, not "looked fine".
+1. **`plugin.json`'s version is the one settled above.**
+2. **`docs/releases/<version>.md` exists** and is committed.
+3. **The plugin was installed from the branch and used in a live session** — `claude plugin marketplace add <path to this checkout>`, then `claude plugin install statusbox@statusbox` — on each platform the diff touches. The test kit drives hooks, not a terminal's paint.
+4. **CI is green on all three platforms**, and every manual check is *recorded* — the version tested and what was observed, not "looked fine".
 
 ### Carry the plan in the body
 
-A release PR's body gets a `## Release` section above `## Summary`, so the decision is visible where it was made:
+A release PR's body gets a `## Release` section above `## Summary`:
 
 ```markdown
 ## Release
-- Version: `v1.2.3` — Cargo.toml declares 1.2.3 ✓
-- Notes: `docs/releases/v1.2.3.md` ✓
-- Prerelease tested: `v1.2.3-rc.1`, installed on macOS and Linux, notifications confirmed
-- Release blocks: parity gate lifted in this PR / none outstanding
-- The tag is pushed **after** merging, as a separate approved step — merging does not publish
+- Version: `2.1.0` — plugin.json declares 2.1.0 ✓
+- Notes: `docs/releases/2.1.0.md` ✓
+- Installed from the branch: Windows (VS Code, fullscreen) and macOS, notifications confirmed
+- A tag, if wanted, is pushed **after** merging, as a separate approved step
 ```
+
+**Never push a tag without explicit approval for that specific tag.**
 
 ## Step 3 — Draft the PR
 
-**Title** — match this repo's actual style (`gh pr list`/`git log` history): a short, plain imperative sentence, no forced `type(scope):` prefix (e.g. "Add sound and visual toast notifications", "Replace the three script trees with one Rust binary"). Under 70 characters. For a `dev` → `master` release PR covering several feature merges, summarize the release as a whole rather than listing every commit title — and remember it carries everything already sitting on `dev`, not just the newest branch.
+**Title** — match this repo's actual style (`gh pr list`/`git log` history): a short, plain imperative sentence, no forced `type(scope):` prefix (e.g. "Add sound and visual toast notifications", "Rebuild the status line as a Claude Code plugin"). Under 70 characters. For a `dev` → `master` release PR covering several feature merges, summarize the release as a whole rather than listing every commit title — and remember it carries everything already sitting on `dev`, not just the newest branch.
 
 **Body** — this repo's merged PRs all use this shape; match it rather than adding sections it doesn't use:
 
@@ -192,14 +166,12 @@ A release PR's body gets a `## Release` section above `## Summary`, so the decis
 Release PRs additionally carry the `## Release` section from Step 2.5, placed first.
 
 **Test plan guidance** — the automated gates are CI's job; this list is for what CI cannot see. Scope it to the actual diff:
-- `- [ ] Box renders without broken alignment or trailing characters`
+- `- [ ] Box renders without broken alignment, beside the docked panel and without it`
 - `- [ ] Colors display correctly (green/yellow/red thresholds)`
-- `- [ ] No output to stderr`
-- `- [ ] Exit 0 on empty, malformed, or missing JSON input`
-- `- [ ] Git status row handles detached HEAD, no-repo, and fresh-clone states`
-- `- [ ] Live session on <platform> — status line renders, hooks fire, notification seen and heard`
-- ``- [ ] Upgrade over an existing install preserves `notify-config.json` ``
-- `- [ ] Installed from the published artifact, checksum and provenance verified` (release PRs)
+- `- [ ] No dim "statusbox: ... skipped" line in the transcript`
+- `- [ ] Git row handles detached HEAD, no-repo, and fresh-clone states`
+- `- [ ] Live session on <platform> — box renders, panel opens and switches sessions, notification seen and heard`
+- `- [ ] Installed from the marketplace with /plugin install, not only loaded with --plugin-dir` (release PRs)
 
 Leave every box unchecked (`- [ ]`) — Claude hasn't run these, so it can't claim they passed. The user checks off what they actually verified.
 
@@ -208,7 +180,7 @@ Leave every box unchecked (`- [ ]`) — Claude hasn't run these, so it can't cla
 1. **Title length** — count characters, must be under 70.
 2. **File coverage** — every changed file should be represented in the Summary or explicitly noted (binary, generated, lock file).
 3. **Re-scan for sensitive content** — re-run the Step 2 grep; don't let a finding slip through.
-4. **Release PRs:** re-check that the version in the `## Release` section matches `Cargo.toml`, and that the notes file it names exists on disk and is committed.
+4. **Release PRs:** re-check that the version in the `## Release` section matches `.claude-plugin/plugin.json`, and that the notes file it names exists on disk and is committed.
 
 ## Step 5 — Preview and confirm
 
@@ -269,14 +241,11 @@ A failure on one platform only is worth calling out as such rather than as "CI i
 
 ## Step 8 — After a release PR merges
 
-Only for `dev` → `master`, and only when the user asks to proceed:
+Only for `dev` → `master`, and only when the user asks to proceed. The merge already published the plugin; a tag only marks it.
 
-1. Confirm `master` now carries the merge.
-2. Confirm the tag does not already exist: `git tag -l "<tag>"` and `gh release view <tag>`.
-3. **Ask for approval to push that specific tag.** Show the tag name and what will happen.
-4. On approval: `git tag -a <tag> <sha> -m "..."` and `git push origin <tag>`.
-5. Watch `release.yml`, then verify the published release — asset count, prerelease flag, and that the **notes attached** are the ones written rather than the boilerplate.
-6. Delete any temporary verification tags and their releases.
+1. Confirm `master` now carries the merge and `.claude-plugin/plugin.json` there holds the new version.
+2. Install it from the published marketplace in a fresh session (`/plugin marketplace update statusbox`, then `/plugin install statusbox@statusbox`) and confirm the box draws.
+3. If the user wants a tag: confirm it does not already exist (`git tag -l "<tag>"`), **ask for approval to push that specific tag**, then `git tag -a <tag> <sha> -m "..."` and `git push origin <tag>`.
 
 ## Edge cases
 
@@ -292,8 +261,8 @@ Only for `dev` → `master`, and only when the user asks to proceed:
 | Uncommitted changes | Warn; suggest the `commit` skill first |
 | Base ahead of branch | Ask: sync first (via `sync` skill) or proceed anyway |
 | Sensitive content in diff | Block; list files; require explicit acknowledgment |
-| Release PR, `Cargo.toml` ≠ intended tag | Bump it in this PR; the version job fails the release otherwise |
-| Release PR, no notes file for the tag | **Write it in this PR**, show it for approval, commit it — never defer it |
-| Release PR, no prerelease was ever installed | Flag it — the install path would be exercised first by real users |
+| Release PR, `plugin.json` version not bumped | Bump it in this PR; without it `claude plugin update` sees nothing new |
+| Release PR, no notes file for the version | **Write it in this PR**, show it for approval, commit it — never defer it |
+| Release PR, never installed from the marketplace | Flag it — the install path would be exercised first by real users |
 | User asks to push a tag | Requires explicit approval for that specific tag, every time |
 | No remote / upstream | `git push -u origin <branch>`; if no `origin` at all, ask for the URL first |

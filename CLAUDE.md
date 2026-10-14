@@ -1,210 +1,96 @@
-# CLAUDE.md -- claude-statusline
+# CLAUDE.md -- statusbox
 
-Cross-platform custom status line for Claude Code, shipped as one Rust binary. Claude Code pipes JSON to stdin on each refresh; the binary parses it and renders ANSI output.
+A Claude Code plugin made of function hooks: a live status box above the prompt, a docked side panel of sessions and agents, pasted-image previews, and desktop notifications. The repository is also its own marketplace, so `/plugin install statusbox --marketplace axlaser/statusbox` installs it from `master`.
 
 ## Project Structure
 
 ```
-src/                 the crate: one multi-call binary, one subcommand per former runtime script, plus the Windows click helper in src/bin/focus.rs
-install/             install.sh + uninstall.sh (macOS and Linux), install.ps1 + uninstall.ps1 (Windows)
-tests/equivalence.rs the single integration test file; a table of named cases
-tests/fixtures/      golden captures, one directory per case
-tests/harness/       fixture capture and paired measurement drivers
-docs/solutions/      documented fixes and practices, by category, with YAML frontmatter (module, tags, problem_type) -- relevant when debugging or implementing in an area one of them covers
-docs/performance.md  standing performance rules: cost model, measurement methodology, equivalence matrix, PR checklist -- binding for any hot-path change
+.claude-plugin/plugin.json       the manifest: name, version, the types contract, userConfig (the /config rows)
+.claude-plugin/marketplace.json  makes the repo a marketplace; its one entry's source is the repo root
+hooks/hooks.json                 names the one hooks module
+hooks/register.tsx               the hooks module: every event hook, the box (AbovePrompt) and the panel (Pane)
+hooks/sidebar.ts                 the panel's sessions: this project's tabs, titles, running sessions, /resume
+hooks/notify.ts                  desktop alerts: one child process per alert, per OS
+hooks/bar.tsx, claude.tsx, effort.tsx   Client modules the terminal runs locally (the bar, the working animation, the effort chip)
+types/index.d.ts                 the $.state contract: every value the module keeps, declared under PluginState
+tests/statusbox.test.ts          the one test file, run by `claude plugin test .`
+assets/                          README images
 ```
 
-`install/` holds the only installers. The per-OS `macos/`, `linux/` and `windows/` directories are gone: they had been reduced to shims that fetched `install/` anyway, so README now publishes `install/install.sh` and `install/install.ps1` directly and a piped install costs one fetch instead of two. `every_url_the_readme_publishes_resolves_to_a_file` asserts every published path still exists, because a 404 through `curl -fsSL … | bash` fails silently — no error, no install.
+`.claude-plugin/types/` is written by the engine whenever it loads the plugin (the full API, about 14,000 lines with doc comments) and is gitignored; `tsconfig.json` extends the one it writes there. Grep it for an event or noun before guessing at the API.
 
 ## Architecture
 
-One binary, `claude-statusline`, dispatching on an argv token rather than `argv[0]`:
+Events write atoms; the one `AbovePrompt` render hook reads them; a write redraws exactly the readers. Nothing runs per refresh: the 1-second clock only advances `now`, and every 5 s re-reads the running-session records (files, no subprocess).
 
-- `statusline` (the default with no subcommand) -- reads the payload on stdin, renders the box
-- `notify <event>` -- sound and toast delivery, triggered by hooks on permission requests, task completion, and compaction. A `stop` whose payload reports a non-empty `background_tasks` raises nothing: the turn ends but the session is only paused until a running subagent hands back, so alerting there fires twice per request and the first one is false. Every other shape of that field stays audible (see `docs/performance.md` §7)
-- `git-refresh` -- cache invalidation hook registered as PostToolUse, clears stale git status after file-modifying tools
-- `subagent` -- subagentStatusLine handler, tees Claude Code's per-task feed to a session state file for the status line to read; prints nothing so the default agent panel stays intact
-- `housekeep` -- the cleanup hook, registered async on `UserPromptSubmit` and on `Notification` with matcher `idle_prompt` (sent once a finished turn has waited `messageIdleNotifThresholdMs`, 60 s by default, and not while background agents run), never per tick. It is written whenever the status line is, with no flag of its own, and never on `Stop`, which would make `settings has notify` read an opt-in that was never given. On Windows it terminates what Claude Code's cancellation of an in-flight refresh strands: `claude-statusline.exe` from this binary's directory with one thread and zero CPU time, and two-argument `cygwin-console-helper.exe` under a `usr\bin`, each only when its parent is gone or its PID reused, it was created before the snapshot, is at least 60 s old and is this user's. A fact it cannot read means skip. On every platform it sweeps the state directory (see below). Prints nothing; `STATUSLINE_SKIP_PROCESS_RECLAIM` turns reclamation off, and every test that launches it sets it. The mechanism is in `docs/solutions/integration-issues/claude-code-taskkill-strands-msys2-children.md`
-- `self-check` -- renders a compiled-in fixture and compares it to the compiled-in expectation; the installer's gate against a binary that launches but renders wrongly
-- `focus <session>.<token>` -- the click handler: resolves the focus record a toast named and brings the session's terminal forward, selecting its tab or pane where the terminal allows it. Reached three ways: terminal-notifier's stored `-execute` action on macOS, the `notify` arm on Linux once notify-send reports the click, and `claude-statusline-focus.exe` on Windows, a second GUI-subsystem executable the shell launches through the `claude-statusline:` URI handler so no console ever appears
-- `settings <apply|remove|has|has-foreign|has-legacy>` -- the installers' `settings.json` editor; `settings protocol <register|unregister|has>` owns the Windows URI handler the same way, and shares the exit-code exemption. `settings supports <name>` answers, before anything loads, whether this binary has a capability an installer depends on (`notification-tools`: terminal-notifier found outside `PATH`); a binary older than the question fails it, which reads as no. `apply` writes each hook in one of two shapes, chosen by running `claude --version` itself: **exec form** at 2.1.139 or newer -- `"command"` is the bare absolute path and the subcommand goes in `"args"`, so Claude Code spawns the binary with no shell, which on Windows skips Git Bash -- and the quoted command string every earlier install wrote when the version is older or cannot be read. `--hook-form exec|shell` overrides the probe. `statusLine` and `subagentStatusLine` stay strings in both, because Claude Code's schema drops `args` for them. Either shape names the binary in `"command"`, so `has`, `remove` and an upgrade that switches forms recognise both and never leave two
+Where each figure comes from:
 
-The crate is lib+bin so the single test file can reach internal behaviour a binary-only crate cannot expose. It has two binaries -- the helper is built on every host and shipped only for Windows -- which is why `Cargo.toml` carries `default-run = "claude-statusline"`: `cargo run` cannot pick between two otherwise. The entry layers live in `src/entry.rs` so both `main`s share them verbatim. On MSVC `build.rs` delay-loads `user32.dll`, which only the click path calls, so the per-tick process does not pay for loading it.
+- **Context, cost, rate limits:** `session.measure` and `$.session.usage()` (refreshed after every main-loop request in `turn.step`).
+- **Token totals and prompt count:** the transcript, read once at `session.start` (streamed through `findstr`/`cat` past 4 MiB), then `turn.complete` usage.
+- **Advisor:** only the transcript records advisor iterations, so it is re-read after a turn that consulted one.
+- **Spend:** `telemetry.log` on the collector stream, `api_request.cost_usd`, classified by `query_source` the way the engine does.
+- **Agents:** `$.agent.list()` plus each agent's `turn.step` usage; its cost is matched to its `api_request` record by the four token counts.
+- **Session tabs:** `$.fs.list` of the project's folder under `<config>/projects/`, titles from the `ai-title`/`custom-title` rows (one `findstr`/`grep` per refresh).
+- **Running sessions:** Claude Code's own records in `<config>/sessions/<pid>.json`.
+- **Alerts:** `classic.PermissionRequest`, `classic.Stop`, `classic.PreCompact`, `classic.PostCompact`, and threshold checks in `session.measure`.
 
-**"The scripts", in code comments, means the three per-platform trees this binary replaced.** Roughly 150 comments explain a choice by reference to them — a threshold copied verbatim, a guard reproduced deliberately, a bug not reproduced on purpose — and every one of those is still the reason the code looks the way it does. They were deleted at `1f5acf2`; `eb56345` is their final state if you need to read one. Do not delete these comments as stale: the fixtures were captured from exactly that code, so the reasoning is what makes a fixture failure interpretable.
-
-**Two subcommands are deliberately exempt from the exit-0 contract**: `self-check` must be able to fail, or the installer cannot tell a bad build from a good one, and `settings` must be able to fail, or an installer reports success having written nothing. Everything else exits 0 always (see Silent Degradation).
-
-There is no output cache. The display recomputes per tick -- the caches in the scripts existed to dodge an interpreter startup cost the migration removed. Six files survive as **data stores, not performance caches**: the learned model-to-window map, the per-task subagent done-linger stamp, the per-session notification latch, the per-session subagent tasks feed, the per-session transcript token record, and the per-session focus record that a toast's click resolves. All but the learned map live in the state directory, where `housekeep` deletes any left untouched for 7 days. The git status cache keeps its 5s TTL, because `git` is still a subprocess and the TTL doubles as the staleness bound for an invalidation key known to be incomplete.
-
-One further file is **read and never written**: `~/.claude/cache/changelog.md`, Claude Code's own cached CHANGELOG, whose first `## X.Y.Z` heading answers "is there a newer Claude Code" for the model row's version segment. The payload carries the running `version` and no update flag, and learning one first-hand would mean a network call behind a subprocess, which the per-tick path does not get. `src/update.rs` owns that read: bounded to 4 KB, through `state::read_trusted_prefix`, and skipped entirely unless the payload's `version` starts with a digit -- a version the comparison cannot read as a number would normalise to zero and make every heading beat it, so it reads as nothing to compare rather than as version zero. A stale cache under-reports, which is the safe direction, and the heading token is truncated to its dotted digits so nothing from that file can reach the row as an escape sequence.
-
-One more lives beside them and belongs to the installers, not the binary: `~/.claude/statusline-installed-tools.txt`. `install.sh` appends a `<tool> <method>` line for each notification tool it installed, and `uninstall.sh` reads it back to offer their removal, acting only on pairs from a fixed allowlist, each mapped to a fixed command. The binary never reads or writes it.
-
-### JSON Input Contract
-
-Claude Code pipes a JSON object to stdin on each refresh. Key top-level fields:
-
-`session_id`, `version`, `workspace.current_dir`, `cwd`, `model.display_name`, `model.id`, `context_window.context_window_size`, `context_window.used_percentage`, `context_window.total_input_tokens`, `effort.level`, `cost.total_cost_usd`, `cost.total_duration_ms`, `transcript_path`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`, `agent.name`, `context_window.current_usage.*`
-
-Legacy spellings the accessors still accept as fallbacks: top-level `total_cost_usd`, and `total_duration_ms` / `duration_ms` for the duration.
-
-See the accessors on `Payload` in `src/payload.rs` for the full field list. The payload is deserialized to a generic JSON value and read through tolerant per-field helpers: a typed model would fail the whole document on one field's type change, blanking the status line where per-field extraction degrades one row.
-
-### Subagent Tasks Feed
-
-Second input contract beside the stdin JSON: Claude Code's `subagentStatusLine` feature pipes `{session_id, tasks: [...]}` (per-task model, context window size, status, token count, description) to `claude-statusline subagent` on each refresh tick. The handler prints nothing and tees the payload to `statusline-tasks-<session-id>.json` inside the state directory (see below); the status line reads it when fresh. Per-task `model` / `contextWindowSize` require Claude Code >= v2.1.205 -- without feed data, the status line falls back to parsing subagent transcripts and resolving the context window through five tiers, in order: this session's own model, then the learned map (`~/.claude/statusline-model-windows.json`, written from each main session's model -> window pair), then a seed table, then a `[1m]` / `-1m` marker in the model id, then a 200K default. `Windows::resolve` in `src/subagent.rs` is the authority; keep this list in step with its doc comment.
-
-### State Directory
-
-Every temp-resident state file is written inside `<temp>/claude-statusline-<owner>/`, where `<temp>` is `$TMPDIR` (`%TEMP%` on Windows) and `<owner>` is the uid on Unix and a digest of the token SID on Windows. Seven families live there: `statusline-git-*`, `statusline-tasks-*`, `statusline-notify-*`, `statusline-tokens-*`, `statusline-focus-*`, `statusline-sa-*-task-*`, and `statusline-sa-*-<agent-base>`. The focus record is written only when this directory verifies: on the flat fallback below, capture is skipped and the toast goes out without click handling, because a record another local user could plant must never name a window to raise. An eighth pattern, `statusline-oc-*`, is delete-only and now vestigial: the binary never writes an output cache, and the `git-refresh` unlink that cleaned up after a script-era install resolves against the state directory, where such a file can never exist. The live cleanup for it is the flat sweep both uninstallers still perform.
-
-`session::state_dir` is the only resolver, and six call sites use it: `Roots::from_env`, the `git-refresh`, `subagent` and `housekeep` dispatch arms, the `notify` arm's capture of the focus record, and the click handler's lookup of it. **`temp: &Path` throughout the crate now means this directory, not the OS temp root.** `session::temp_dir` remains the escape hatch for anything that genuinely needs the root.
-
-Two rules the design rests on, both with a test behind them:
-
-- **Resolution creates nothing.** It runs before the payload is parsed, and a tick whose payload does not parse must leave the temp root untouched (`degraded_input_renders_the_notice_and_touches_no_state`). Creation happens on the first guarded write.
-- **Only this directory is created privately.** `state::write_guarded` also serves `~/.claude`, the flat temp root on the fallback path, and the test harness's scratch roots — applying the private-directory check to those rejects every one of them, and every state write on Linux fails with it. `StateRoot` carries the distinction explicitly; it is not inferable from the path or from whether the parent exists (`guarded_creation_applies_only_to_the_state_directory`).
-
-When the directory exists but does not verify — a symlink, a reparse point, a foreign owner — the binary falls back to writing flat in the temp root, exactly as it did before. That fallback is required by the silent-degradation contract and it means **this is not a security improvement**: an attacker who prefers the flat layout gets it by pre-creating the directory. The security boundary is still the per-file guards in `src/state.rs`. Existing flat files from an earlier version are never migrated, read or swept; both uninstallers keep their legacy flat globs for that reason.
-
-**`housekeep` sweeps this directory and nothing else**, since 2026-10-07: staging files (`.<family>….<pid>.tmp`, left by a write killed between write and rename) older than 10 minutes, and files of the seven families older than 7 days. It runs only when the root is the guarded directory and verifies private at that moment, so the flat fallback is never swept: deleting predictable names in a shared temp root is the surface the guards exist for. It acts on regular files only, by their own metadata, so a link or reparse point is neither followed nor removed; a future mtime reads young, and a file a concurrent pass removed first is no error. A session resumed after a week may repeat one threshold alert or re-read its transcript once (`docs/performance.md` §4).
-
-### Dependencies
-
-- **Runtime:** none. `git` is required only for the git status row; without it that row is absent. No `jq`, no Bash version floor, no PowerShell version floor.
-- **Build:** a Rust toolchain. Linux targets link statically against musl so one artifact runs on any distribution, including Alpine and older glibc.
-- **Install:** `curl` (macOS/Linux) or `Invoke-WebRequest` (Windows), plus a SHA-256 tool -- `sha256sum`, `shasum`, or `Get-FileHash`. `gh` is optional and enables provenance verification.
-- **Optional, for visual notifications:** `terminal-notifier` on macOS, found on `PATH` or, failing that, in `~/Applications`, `/Applications` or a Homebrew or MacPorts prefix, and run from there only when it and its directory belong to this user or root and nobody else can write them; `libnotify` on Linux. Windows needs nothing: the toast goes through the built-in notification API from Windows PowerShell 5.1. The macOS and Linux installer checks for the tools the runtime would use, explains each one, installs them with one yes (Homebrew or terminal-notifier's pinned release on macOS, the package manager through `sudo` on Linux), and prints the commands for anything it did not install; `CLAUDE_STATUSLINE_DEPS=yes|no` answers in advance. For raising the window on a toast click, Linux additionally uses `xdotool` or `wmctrl` on X11 and `kdotool` on KDE Wayland when they are installed; tab and pane selection reaches `osascript`, `kitten`, `wezterm`, `tmux`, `screen`, `zellij` and a Konsole D-Bus caller by absolute path, each optional.
+**"The binary" and file names like `render.rs`, `src/subagent.rs` or `src/notify_state.rs` in comments mean the Rust implementation this plugin replaced.** It was deleted on `dev-claude-plugin`; `67f0e5b` on `dev` (and the `v1.0.0-rc.2` tag) is its final state. Those comments explain why a threshold, a rule or a wording is what it is; keep them.
 
 ## Development
 
-### Branching
-
-Two-tier flow: create feature branches as `dev-<feature>` (e.g. `dev-notifications`), PR them into `dev`, and periodically release `dev` into `master` via a release PR. The repo-local `pr` and `sync` skills pick the right base/source automatically from this model.
-
-### Release Channels
-
-Three, all served by `.github/workflows/release.yml` and resolved by the installers without a token:
-
-- **Stable** -- a `vX.Y.Z` tag. The plain install command resolves it through `releases/latest`, which excludes prereleases.
-- **Prerelease** -- any other tag shape (`v1.0.0-rc.1`, `verify-*`), published as a prerelease. `--pre` resolves the newest tagged release from the atom feed, `v` and a digit only.
-- **Dev channel** -- every push to `dev`. The workflow publishes one prerelease tagged `dev-channel` and replaces its assets, title and notes in place on each push, so the Releases page carries a single entry for it. `--dev` pins that tag, resolving nothing, and outranks `--pre`. A head commit whose message carries `[skip release]` publishes nothing -- anywhere in the message, body included, so a commit message that talks about the marker must not spell it out (the commit that introduced it skipped its own run that way).
-
-The `dev-channel` tag is created on the first run and never moved: a moving tag makes every clone's next `git fetch` fail with "would clobber existing tag". So the tag does not say which commit a build came from -- the release title and notes do, and the Sigstore attestation proves it. Pushing `dev` therefore builds all six targets on every push -- a stable or prerelease tag is still the only thing that publishes a release a plain or `--pre` install can reach.
-
-### Testing
-
 ```
-cargo test                          # the whole suite, including the fixture case table
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+claude plugin validate .          # manifest, marketplace, module scan: what the engine would refuse
+claude plugin test .              # the test file against the engine itself
+tsc -p .                          # once the engine has written .claude-plugin/types/
+claude --plugin-dir .             # a session with this checkout loaded and watched for edits
 ```
 
-All three are gates on every commit. `cargo test` includes the case table, which stages each case into isolated home and temp roots, pins the clock, renders in-process, and refuses to compare output that leaked a machine-local path.
+All three checks are gates on every commit, and CI runs the first two on Linux, macOS and Windows.
 
-- **One test file.** `tests/equivalence.rs` drives a table of named cases; a failure names the case and shows the diff. Fixtures live under `tests/fixtures/` as data files, never as additional test files. Do not add a second test file.
-- Set `STATUSLINE_DEBUG=1` to enable debug logging to `~/.claude/statusline-debug.log`, from every subcommand.
-- `claude-statusline self-check` renders the real fixture and exits non-zero on mismatch -- the fastest confirmation that a build is sound.
-- Install locally via `bash install/install.sh` (or `install/install.ps1`) to test the full flow. It fetches a published release; `--dev` takes the newest dev-channel build, so a pushed `dev` can be uninstalled and reinstalled end to end without cutting a tag.
-
-**A green Windows run does not prove the suite passed.** Five equivalence cases skip on Windows without Developer Mode because they need symlinks; they print a reason and report as passing. Others carry `#[cfg(unix)]` assertions that simply do not compile into a Windows build — the state directory's mode check is one. CI's Unix runners are what exercise both.
-
-This is measured, not theoretical. Reintroducing the defect that guarded creation is scoped against — applying the private-directory check to every `write_guarded` parent, so `/tmp` and `~/.claude` are rejected — leaves Windows at **144 passed, 0 failed** while Linux fails **10**. Run the suite on Linux before believing a change to the state directory, the guards, or anything under `src/platform/` is green. `docker run --rm -v "<repo>:/host:ro" rust:latest bash -c 'git config --global --add safe.directory /host && git clone -q /host /src && cd /src && cargo test'` is enough, and does not need a push.
-
-What to verify after changes:
-
-- Box renders without broken alignment or trailing characters
-- Colors display correctly (green/yellow/red thresholds)
-- No output to stderr (breaks Claude Code UI)
-- Exit 0 on empty, malformed, or missing JSON input
-- Git status row handles detached HEAD, no-repo, and fresh-clone states
-
-### File Encoding
-
-Enforced by `.gitattributes` -- do not override. It governs the installers and the harness; Rust sources carry no constraint beyond git's defaults.
-
-- `*.sh` -- LF line endings
-- `*.ps1` -- CRLF line endings with UTF-8 BOM
-- **Exception:** `install/install.ps1` and `install/uninstall.ps1` are **BOM-less and ASCII-only**. They run via `irm <url> | iex`, and a BOM survives `irm` as a stray U+FEFF that breaks `iex` on the first token (fixed in `762dcc0`, regressed once by re-applying the BOM rule mechanically -- do not "fix" the missing BOM back). ASCII-only keeps them safe to run from a local clone too.
-
-`fetched_powershell_installers_are_bomless_ascii` asserts the exception, so a mechanical re-application fails the suite rather than shipping.
-
----
+- **One test file.** `tests/statusbox.test.ts`; a behaviour with a branch gets a test there. Write UI tests once and loop them over `['terminal', 'desktop']`.
+- `claude --debug` logs every hook failure and every tree the engine refused. In a session that hot-reloads the plugin, the transcript also gets one dim `statusbox: …` line per failure.
 
 ## Rules
 
-These rules apply to every task in this project unless explicitly overridden.
-Bias: caution over speed on non-trivial work.
-Naming: Rust conventions throughout the crate (`snake_case` items, `SCREAMING_CASE` constants). The installers keep their dialects' conventions: Bash `snake_case`, PowerShell `PascalCase`.
+These apply to every task unless explicitly overridden. Bias: caution over speed on non-trivial work.
 
-### Platform-Specific Code Is Confined
+### A hook never breaks the session
 
-There is one implementation. Platform-conditional code is confined to four areas and nowhere else:
+A hook that throws is skipped and the box simply stops updating, with nothing on screen to say why. So:
 
-1. **notification delivery** -- the per-OS sound and toast mechanisms, and the click side of them: capturing which terminal window a session runs in, the click transport, and the Windows URI registration,
-2. **file-ownership checks** -- the uid and ACL guards,
-3. **process and stream handling** -- redirecting fd 2 at entry, creation flags on spawned children, and reclaiming stranded processes: the process snapshot focus capture shares, the facts read through one handle per candidate, and termination on that handle,
-4. **environment spelling** -- `%USERPROFILE%` against `$HOME`, `%TEMP%` against `$TMPDIR`, and whether a stored command needs quoting.
+- Every hook calls `next(e)` and returns what it resolves to, unless it means to answer for the engine.
+- Work started off the hook's path (`void …`) carries its own `.catch`: an unhandled rejection is still a failure.
+- Child processes are bounded with `timeoutMs`, and a missing tool means a missing feature, never an error.
+- A hook that refuses something (a guard) gets a `.catch` that refuses when the hook fails. The rest need none: a failing one is skipped and the event goes on, so the validator's "gating hook without .catch" lines for them are expected.
 
-Anything else that reaches for `cfg!(windows)` is a design error -- most often a sign that a behaviour should be resolved to one recorded answer instead of branched. Path formatting is the worked example: the port compares the home prefix case-sensitively on every platform rather than matching Windows' case-insensitive comparison, because keeping both would need a branch here (see `docs/performance.md` §4).
+### The state scanner's rules
 
-`platform_conditional_code_stays_in_its_areas` enforces this against the file list, in both directions -- a new branch outside the areas fails, and so does an exemption that is no longer used. One implementation grows back into three one `cfg!` at a time, which is why this is a test rather than a convention.
+The engine lists every `$.state` key a module reads and writes, and refuses a module it cannot list:
 
-### Silent Degradation
+- An atom must be declared (`atom({ plugin: 'statusbox', key })`) in the same file that reads or writes it. Two files may declare the same key.
+- Every key is declared in `types/index.d.ts`. Renaming one drops a running session's value on reload.
 
-Every subcommand Claude Code runs -- `statusline`, `notify`, `git-refresh`, `subagent`, `housekeep` -- must exit 0, even on error, and write nothing to stderr. Breaking this contract crashes the Claude Code status line for users.
+### Platform branches are confined
 
-One call precedes the layers: `entry::silence()` first clears the inherit flag on the three standard handles (`platform::make_std_handles_uninheritable`, a no-op off Windows). `CreateProcess` hands a child every inheritable handle, so without it the detached `notify` child held Claude Code's output pipes open and the refresh waited for that child to exit. It must run before layer 1, because the redirect leaves the original stderr open where the call can no longer reach it; it writes nothing, so going first exposes nothing on fd 2.
-
-Enforced at process entry in five layers, all of which must stay:
-
-1. redirect fd 2 to the null device before anything can write to it,
-2. install a no-op panic hook,
-3. wrap each subcommand in `catch_unwind`,
-4. flush stdout **and check the flush result**,
-5. exit 0.
-
-The flush is load-bearing: `std::process::exit` runs no destructors, so a buffered writer dropped unflushed produces an empty status line that satisfies every exit-code and stderr assertion. The release profile keeps `panic = "unwind"` so layer 3 exists in shipped builds. Never use `println!`/`eprintln!` -- they panic on a broken pipe, which is routine when the parent stops reading.
-
-Log errors via the debug log (`STATUSLINE_DEBUG`), not to the user's terminal.
-
-`self-check` and `settings` are the two deliberate exemptions; see Architecture.
-
-### No `exit` in Install/Uninstall Scripts
-
-Install and uninstall scripts must never use `exit`. Windows scripts are invoked via `irm | iex`, which runs in the user's current PowerShell session -- `exit` terminates that session and closes the terminal window.
-
-- **Trailing `exit 0`**: Remove it. Scripts naturally return 0 when they reach the end.
-- **Bash error paths**: Use `return 1 2>/dev/null || exit 1`. `return` succeeds when sourced; `exit` is the fallback for subshell invocation via `curl | bash`.
-- **PowerShell error paths**: Use `return`. This exits the script scope without terminating the session.
-
-This rule applies to `install.*` and `uninstall.*` in `install/`, which is the only place they now live. `install_scripts_never_exit_the_users_shell` asserts it.
-
-### Installers Gate On the Self-Check
-
-Nothing irreversible happens before `claude-statusline self-check` passes: not removing a prior installation's scripts, not rewriting `settings.json`. A binary can pass its checksum, launch, and still render wrongly, and the silent-degradation contract guarantees that failure reaches the user as an absent status line with no other signal. On a failing check, the installer restores the previous binary and leaves `settings.json` untouched.
-
-Terminating processes is irreversible too, so `install.ps1` runs `housekeep` only after the check passes, and removes the previous binary's `.old` copy only after that: stranded processes keep that image mapped. A stale `.old` that cannot be deleted is renamed aside rather than allowed to abort the upgrade. `uninstall.ps1` runs `housekeep` before `settings remove`.
+`OS === 'Windows_NT'` and friends appear only in: the clipboard capture (Windows only), the transcript stream (`findstr` against `cat`), the title lookup (`findstr` against `grep`), the URL opener, and `hooks/notify.ts`. A branch anywhere else is a design error: decide the behaviour once instead.
 
 ### Performance
 
-The hot cost is no longer an interpreter. Every refresh still spawns a fresh process, but it is a native binary with no startup floor to amortise, so the remaining costs are real work: subprocess `git`, reading the transcript, and the syscalls around state files. Full rules, cost model, and the mandatory PR checklist live in `docs/performance.md`. The non-negotiables:
+- No subprocess on the 1-second clock or in a hook that fires per request. `git` runs once after a turn (debounced), the title lookup once per turn.
+- The transcript is read at session start and after an advisor turn only.
+- A Client module's timer changes nothing once it has settled, so an idle box never redraws.
 
-- No new subprocess on a per-tick path. `git` is the only one, and it is bounded by the 5s TTL. The focus capture runs only when a visual alert fires, in the tick's alert branch or the hook, never per tick. `housekeep`'s process snapshot runs on its two hooks and in the Windows installers, never per tick. The git pair is spawned concurrently and the count is pinned per repo state by `the_git_child_count_is_pinned_per_repo_state`; two states carry an accepted increase from one child to two, recorded in `docs/performance.md` §7. Widening that needs a measurement and an entry, not a judgement call.
-- Do not reintroduce an output cache. It was deleted deliberately; the cost it hid is gone.
-- Do not read the transcript when `(mtime, size)` are unchanged -- everything the tokens and model rows render is reconstructable from the stored record. This is measured, not assumed: an unconditional scan cost ~50 ms on 8 MB and made the port 4x slower than the script on Linux. Since 2026-09-21 a **third tier** sits beneath that skip: a transcript that strictly grew, whose head checksum and boundary anchor both verify, is resumed from the stored offset rather than re-read. Every gate that fails falls through to the full read, never to a wrong answer, and a ceiling forces a full read periodically so a poisoned offset cannot outlive it. `docs/performance.md` §7 has the design and the reasons; do not add a gate without reading it.
-- Performance changes must keep rendered output byte-identical (verified by the case table) and must be measured with fresh-process probes, never warm loops -- end-to-end before/after medians only.
-- Debug-log call sites must not evaluate expensive arguments when logging is off.
-- Bump `RECORD_VERSION` whenever a stored record format changes.
-- `docs/performance.md` is a living document -- whenever work measures a new cost, rules out a hypothesis, accepts a rendered-output divergence, or settles a design question, update it in the same change. Its §6 reference numbers must always describe the current binary, and every row must carry the host class it was measured on.
+### Untrusted text stays data
+
+Notification text, session titles and paths reach a child process as argv items or environment variables, never inside script text. The Windows scripts are constant strings that read `$env:`.
 
 ### Repo Skills and Branching
 
-- Every commit, sync, and pull request goes through the repo-local skills (`commit`, `sync`, `pr`) — never hand-written `git commit`, `git merge`, or `gh pr create`. The skills encode this repo's message style, two-tier flow, signing, and safety checks.
-- Never create a new branch without asking the user first — use `AskUserQuestion` when available, plain chat otherwise. This applies even when a plan, skill, or workflow suggests a branch: the user decides branch creation, every time.
+- Two-tier flow: feature branches are `dev-<feature>`, PR'd into `dev`; `dev` is released into `master` by a release PR. **Merging into `master` publishes**: it is what `/plugin install` and `claude plugin update` fetch. Bump the version in `.claude-plugin/plugin.json` in the release PR.
+- Every commit, sync, and pull request goes through the repo-local skills (`commit`, `sync`, `pr`), never hand-written `git commit`, `git merge`, or `gh pr create`.
+- Never create a new branch without asking the user first, using `AskUserQuestion` when available. This applies even when a plan, skill, or workflow suggests a branch.
 
 ### Never Commit
 
-- A hardcoded absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`) where `$HOME` / `~` / `$env:USERPROFILE` belongs. This tool runs on other people's machines — a baked-in personal path is a shipped bug, not just a privacy leak. The case table refuses to compare output that leaked one.
-- `statusline-debug.log` or any other runtime debug/log artifact.
+- A hardcoded absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`). The plugin runs on other people's machines.
+- A debug log, a scratch script, or `.claude-plugin/types/`.
