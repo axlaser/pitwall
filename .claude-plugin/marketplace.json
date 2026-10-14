@@ -1,0 +1,5 @@
+{
+  "name": "statusbox",
+  "owner": { "name": "axlaser" },
+  "plugins": [{ "name": "statusbox", "source": "./" }]
+}
