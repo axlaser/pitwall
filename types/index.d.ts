@@ -81,8 +81,10 @@ export type Tab = { id: string; title: string | null; mtimeMs: number }
 
 // A Claude Code session running on this machine, from the record Claude Code
 // keeps of it for its agents view: `status` busy, idle, waiting (on the
-// person) or shell; `kind` interactive (a terminal holds it) or a background one.
-export type Live = { sessionId: string; cwd: string; kind: string; status: string; since: number }
+// person) or shell, or sdk for one a program runs (it reports none); `kind`
+// interactive (a terminal or a program holds it) or a background one; `name`
+// its folder's name and a short suffix, what tells two in one folder apart.
+export type Live = { sessionId: string; cwd: string; kind: string; status: string; name: string; since: number }
 
 // The threshold alerts already raised: the context's until it drops below its
 // threshold, the rate limit's until the window it fired for (`resetsAt`) resets.

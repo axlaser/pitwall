@@ -4,7 +4,7 @@ import type { EngineInterface, Register, SessionUsage, TurnStepInput } from 'cla
 import type { Advisor, Agent, Alerted, Git, Live, Place, Preview, RateWindow, Reading, Speed, Spend, Tab, Tokens } from '../types'
 import { notify, permissionMessage } from './notify'
 import type { Delivery } from './notify'
-import { age, openSession, refreshLive, refreshTabs, space } from './sidebar'
+import { age, openSession, refreshLive, refreshTabs } from './sidebar'
 
 // The claude-statusline box, rebuilt on events instead of a process per tick:
 // every event writes an atom, the one AbovePrompt hook reads them, and a write
@@ -565,9 +565,9 @@ export const register: Register = (on, options) => {
               const note = age(t - x.since)
               return (
                 <Button plain key={`live-${x.sessionId}`} onPress={go(x.sessionId)}>
-                  <Text color={STATUS_COLOR[x.status] ?? 'gray'}>{x.status === 'idle' ? '○ ' : '● '}</Text>
+                  <Text color={STATUS_COLOR[x.status] ?? 'gray'}>{x.status === 'idle' || x.status === 'sdk' ? '○ ' : '● '}</Text>
                   <Text dimColor>{x.status.padEnd(8)}</Text>
-                  <Text color="blue">{fit(10, space(x.cwd), note)}</Text>
+                  <Text color={x.status === 'sdk' ? 'gray' : 'blue'}>{fit(10, x.name, note)}</Text>
                   <Text dimColor>{note}</Text>
                 </Button>
               )

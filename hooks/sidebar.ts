@@ -81,7 +81,17 @@ function parseLive(text: string): Live | null {
     const id = text_(r.sessionId)
     const cwd = text_(r.cwd)
     if (!id || !cwd) return null
-    return { sessionId: id, cwd, kind: text_(r.kind) ?? 'interactive', status: text_(r.status) ?? 'idle', since: time(r.statusUpdatedAt) ?? time(r.updatedAt) ?? 0 }
+    // A session an SDK program runs (a hook's helper, a script) reports no
+    // status and no update time: it is labelled for what it is, aged from its start.
+    const isProgram = text_(r.entrypoint)?.startsWith('sdk') === true
+    return {
+      sessionId: id,
+      cwd,
+      kind: text_(r.kind) ?? 'interactive',
+      status: text_(r.status) ?? (isProgram ? 'sdk' : 'idle'),
+      name: text_(r.name) ?? space(cwd),
+      since: time(r.statusUpdatedAt) ?? time(r.updatedAt) ?? time(r.startedAt) ?? 0,
+    }
   } catch {
     return null
   }
@@ -93,7 +103,8 @@ function parseLive(text: string): Live | null {
 export async function openSession($: $, id: string): Promise<void> {
   if (id === (await read($, sessionId))) return
   const held = (await read($, live)).find(s => s.sessionId === id)
-  if (held?.kind === 'interactive') return $.ui.toast(`That session is open in another terminal (${space(held.cwd)})`)
+  if (held?.status === 'sdk') return $.ui.toast(`That session is run by a program, not a terminal (${held.name})`)
+  if (held?.kind === 'interactive') return $.ui.toast(`That session is open in another terminal (${held.name})`)
   await $.command.run({ command: 'resume', args: id }).catch(() => $.ui.toast('Could not switch to that session'))
 }
 

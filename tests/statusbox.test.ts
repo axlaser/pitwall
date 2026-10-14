@@ -342,11 +342,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // one in another terminal.
     on('fs.list', ($, e) => ({
       value: e.path.endsWith('sessions')
-        ? [file('100.json', 0), file('200.json', 0)]
+        ? [file('100.json', 0), file('200.json', 0), file('300.json', 0)]
         : [file('s1.jsonl', 3000), file('s2.jsonl', 2000), file('s3.jsonl', 1000), file('stub.jsonl', 4000, 200)],
     }))
-    const record = (sessionId: string, cwd: string, status: string) => JSON.stringify({ sessionId, cwd, kind: 'interactive', status, updatedAt: 1 })
-    on('fs.read', ($, e) => ({ value: e.path.endsWith('100.json') ? record('s1', 'C:\\repo', 'busy') : record('s3', 'C:\\other', 'idle') }))
+    const record = (sessionId: string, cwd: string, status: string) => JSON.stringify({ sessionId, cwd, kind: 'interactive', status, updatedAt: 1, name: `${sessionId}-name` })
+    on('fs.read', ($, e) => ({
+      value: e.path.endsWith('300.json')
+        ? JSON.stringify({ sessionId: 's9', cwd: '/repo', kind: 'interactive', entrypoint: 'sdk-py', name: 'repo-e8', startedAt: 1 })
+        : e.path.endsWith('100.json') ? record('s1', 'C:\\repo', 'busy') : record('s3', 'C:\\other', 'idle'),
+    }))
     // findstr names each file before the rows it found there; a /rename wins.
     const dir = 'C:\\home\\me\\.claude\\projects\\C--repo'
     const found = [
@@ -362,7 +366,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await $.command.run({ command: 'sidebar', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
-    for (const text of ['1 Mod work', '2 Fix the leak', '3 s3', 'idle', 'other']) {
+    for (const text of ['1 Mod work', '2 Fix the leak', '3 s3', 'idle', 's3-name', 'sdk', 'repo-e8']) {
       expect((await ui.find({ type: 'Button', text })) ? text : `missing: ${text}`).toBe(text)
     }
     expect(await ui.find({ key: 'tab-stub' })).toBeUndefined()
@@ -371,8 +375,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'tab-s1' })
     await ui.press({ key: 'tab-s3' })
     await ui.press({ key: 'new' })
+    await ui.press({ key: 'live-s9' })
     expect(ran.filter(r => r !== 'sidebar ')).toEqual(['resume s2', 'clear '])
-    expect(toasts).toEqual(['That session is open in another terminal (other)'])
+    expect(toasts).toEqual(['That session is open in another terminal (s3-name)', 'That session is run by a program, not a terminal (repo-e8)'])
   })
 
   // Raster is the terminal's alone; the desktop draws no preview.
