@@ -1,6 +1,6 @@
 # CLAUDE.md -- statusbox
 
-A Claude Code plugin made of function hooks: a live status box above the prompt, a docked side panel of sessions and agents, pasted-image previews, and desktop notifications. The repository is also its own marketplace, so `/plugin install statusbox --marketplace axlaser/statusbox` installs it from `master`.
+A Claude Code plugin made of function hooks: a live status box above the prompt, a docked side panel of agents, pasted-image previews, and desktop notifications. The repository is also its own marketplace, so `/plugin install statusbox --marketplace axlaser/statusbox` installs it from `master`.
 
 ## Project Structure
 
@@ -9,9 +9,8 @@ A Claude Code plugin made of function hooks: a live status box above the prompt,
 .claude-plugin/marketplace.json  makes the repo a marketplace; its one entry's source is the repo root
 hooks/hooks.json                 names the one hooks module
 hooks/register.tsx               the hooks module: every event hook, the box (AbovePrompt) and the panel (Pane)
-hooks/sidebar.ts                 the panel's sessions: this project's tabs, titles, running sessions, /resume
 hooks/notify.ts                  desktop alerts: one child process per alert, per OS
-hooks/bar.tsx, claude.tsx, effort.tsx   Client modules the terminal runs locally (the bar, the working animation, the effort chip)
+hooks/bar.tsx, claude.tsx, effort.tsx, count.tsx   Client modules the terminal runs locally (the bar, the working animation, the effort chip, the rolling figures; count.tsx also holds the number formatters)
 types/index.d.ts                 the $.state contract: every value the module keeps, declared under PluginState
 tests/statusbox.test.ts          the one test file, run by `claude plugin test .`
 assets/                          README images
@@ -21,7 +20,7 @@ assets/                          README images
 
 ## Architecture
 
-Events write atoms; the one `AbovePrompt` render hook reads them; a write redraws exactly the readers. Nothing runs per refresh: the 1-second clock only advances `now`, and every 5 s re-reads the running-session records (files, no subprocess).
+Events write atoms; the one `AbovePrompt` render hook reads them; a write redraws exactly the readers. Nothing runs per refresh: the 1-second clock only advances `now` and checks the prompt for a newly pasted image.
 
 Where each figure comes from:
 
@@ -30,8 +29,6 @@ Where each figure comes from:
 - **Advisor:** only the transcript records advisor iterations, so it is re-read after a turn that consulted one.
 - **Spend:** `telemetry.log` on the collector stream, `api_request.cost_usd`, classified by `query_source` the way the engine does.
 - **Agents:** `$.agent.list()` plus each agent's `turn.step` usage; its cost is matched to its `api_request` record by the four token counts.
-- **Session tabs:** `$.fs.list` of the project's folder under `<config>/projects/`, titles from the `ai-title`/`custom-title` rows (one `findstr`/`grep` per refresh).
-- **Running sessions:** Claude Code's own records in `<config>/sessions/<pid>.json`.
 - **Alerts:** `classic.PermissionRequest`, `classic.Stop`, `classic.PreCompact`, `classic.PostCompact`, and threshold checks in `session.measure`.
 
 **"The binary" and file names like `render.rs`, `src/subagent.rs` or `src/notify_state.rs` in comments mean the Rust implementation this plugin replaced.** It was deleted on `dev-claude-plugin`; `67f0e5b` on `dev` (and the `v1.0.0-rc.2` tag) is its final state. Those comments explain why a threshold, a rule or a wording is what it is; keep them.
@@ -72,17 +69,17 @@ The engine lists every `$.state` key a module reads and writes, and refuses a mo
 
 ### Platform branches are confined
 
-`OS === 'Windows_NT'` and friends appear only in: the clipboard capture (Windows only), the transcript stream (`findstr` against `cat`), the title lookup (`findstr` against `grep`), the URL opener, and `hooks/notify.ts`. A branch anywhere else is a design error: decide the behaviour once instead.
+`OS === 'Windows_NT'` and friends appear only in: the clipboard capture (Windows only), the transcript stream (`findstr` against `cat`), the URL opener, and `hooks/notify.ts`. A branch anywhere else is a design error: decide the behaviour once instead.
 
 ### Performance
 
-- No subprocess on the 1-second clock or in a hook that fires per request. `git` runs once after a turn (debounced), the title lookup once per turn.
+- No subprocess on the 1-second clock or in a hook that fires per request. `git` runs once after a turn (debounced).
 - The transcript is read at session start and after an advisor turn only.
 - A Client module's timer changes nothing once it has settled, so an idle box never redraws.
 
 ### Untrusted text stays data
 
-Notification text, session titles and paths reach a child process as argv items or environment variables, never inside script text. The Windows scripts are constant strings that read `$env:`.
+Notification text and paths reach a child process as argv items or environment variables, never inside script text. The Windows scripts are constant strings that read `$env:`.
 
 ### Repo Skills and Branching
 

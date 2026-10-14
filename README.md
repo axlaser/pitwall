@@ -3,7 +3,7 @@
 # statusbox
 
 **A live status box for [Claude Code](https://claude.ai/code), built as a plugin.**<br>
-Context, git, tokens, cost and rate limits above the prompt, a side panel of sessions and agents, and desktop notifications.
+Context, git, tokens, cost and rate limits above the prompt, a side panel of agents, and desktop notifications.
 
 [![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](#install)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](#install)
@@ -50,11 +50,11 @@ irm https://raw.githubusercontent.com/axlaser/statusbox/v1.0.0-rc.2/install/unin
 
 ## The box
 
-A band above the prompt, redrawn as things happen rather than on a timer.
+A band above the prompt, redrawn as things happen rather than on a timer. Its figures roll up or down to each new value.
 
 | Row | Contents |
 |-----|----------|
-| **repo** | Directory (shortened to `~`), branch, `↑ahead` `↓behind`, `+insertions` `-deletions` `~untracked`, `⊟ stashes`, and `sessions ›` to open the side panel. Labelled **project** outside a git repo. Click the path to open the repository's web page. |
+| **repo** | Directory (shortened to `~`), branch, `↑ahead` `↓behind`, `+insertions` `-deletions` `~untracked`, `⊟ stashes`, and `agents ›` to open the side panel. Labelled **project** outside a git repo. Click the path to open the repository's web page. |
 | **model** | Context bar with %, `used/window` tokens, model, reasoning effort, `● ready` or Claude's working animation, and your Claude Code version (click it for the changelog). |
 | **tokens** | Session totals for `in`, `cache↑` (writes), `cache↓` (reads) and `out`, the latest turn's share in brackets, then how long the latest turn took to its first output and in all. |
 | **advisor** | Only when the advisor tool was used: its model, calls, tokens and cost. |
@@ -76,15 +76,13 @@ Rows with nothing to show are hidden.
 
 ## The side panel
 
-In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript. Open it with `/sidebar` or `sessions ›` in the box.
+In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript. Open it with `/sidebar` or `agents ›` in the box.
 
-- **Sessions:** this project's six most recent sessions as tabs, titled the way `/resume` lists them. Click one to switch to it in place; `+` starts a new session (`/clear`).
-- **Agents:** a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, with Claude's animation while it works.
-- **Elsewhere:** the other Claude Code sessions running on this machine, busy, idle or waiting for you.
+It holds a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, with Claude's animation while it works.
 
 **Keys:** `ctrl+x ←` and `ctrl+x →` widen and narrow it, `ctrl+x x` closes it. Once closed it stays closed until you open it again.
 
-Claude Code docks panels on the right, and only in fullscreen mode at 110 columns or wider; a plugin can't move it to the left. A session of another project can't be switched to in place, and one already open in another terminal isn't taken over: the panel says where it is instead.
+Claude Code docks panels on the right, and only in fullscreen mode at 110 columns or wider; a plugin can't move it to the left.
 
 ## Notifications
 
@@ -131,7 +129,7 @@ In `/config`, under statusbox:
 
 statusbox is a Claude Code plugin made of function hooks: the box, the panel and the alerts react to the engine's own events (each request, each turn, compaction, permission prompts) instead of running a program on every refresh. The box draws above the prompt through `ui.render`, the panel is a docked `Pane`, and the animations are small client modules the terminal runs locally.
 
-It reads only what Claude Code already writes: the session's transcript (once at start, and after a turn that used the advisor), your project's session files for their titles, and Claude Code's record of running sessions. After each turn it runs `git` for the repo row and one `findstr` (or `grep`) for the session titles; nothing runs on a timer but file reads. It makes no network calls, and the cost figures are Claude Code's own.
+It reads only what Claude Code already writes: the session's transcript, once at start and again after a turn that used the advisor. After each turn it runs `git` for the repo row. It makes no network calls, and the cost figures are Claude Code's own.
 
 This repository was `claude-statusline`, a Rust binary; that version is at [v1.0.0-rc.2](https://github.com/axlaser/statusbox/tree/v1.0.0-rc.2).
 

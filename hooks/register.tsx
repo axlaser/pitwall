@@ -1,10 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionUsage, TurnStepInput } from 'claude-code'
 
-import type { Advisor, Agent, Alerted, Git, Live, Place, Preview, RateWindow, Reading, Speed, Spend, Tab, Tokens } from '../types'
+import type { Advisor, Agent, Alerted, Git, Place, Preview, RateWindow, Reading, Speed, Spend, Tokens } from '../types'
+import { figure, formatElapsed } from './count'
+import type { Figure } from './count'
 import { notify, permissionMessage } from './notify'
 import type { Delivery } from './notify'
-import { age, openSession, refreshLive, refreshTabs } from './sidebar'
 
 // The claude-statusline box, rebuilt on events instead of a process per tick:
 // every event writes an atom, the one AbovePrompt hook reads them, and a write
@@ -28,10 +29,6 @@ const NO_SPEED: Speed = { firstOutputMs: null, replyMs: null }
 const speed = atom({ plugin: 'statusbox', key: 'speed' } as const, NO_SPEED)
 const previews = atom({ plugin: 'statusbox', key: 'previews' } as const, [] as Preview[])
 const now = atom({ plugin: 'statusbox', key: 'now' } as const, 0)
-// The panel's sessions, which ./sidebar fills.
-const tabs = atom({ plugin: 'statusbox', key: 'tabs' } as const, [] as Tab[])
-const live = atom({ plugin: 'statusbox', key: 'live' } as const, [] as Live[])
-const sessionId = atom({ plugin: 'statusbox', key: 'sessionId' } as const, null as string | null)
 // Set when the person closes the panel, so a reload does not open it again.
 const panelClosed = atom({ plugin: 'statusbox', key: 'panelClosed' } as const, false)
 // Which threshold alerts have fired, so each fires once until it re-arms.
@@ -43,7 +40,6 @@ const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const PANE = 'sidebar'
 const PANE_COLUMNS = 40
 const ENDED_SHOWN = 5
-const STATUS_COLOR: Record<string, string> = { busy: 'yellow', waiting: 'red', shell: 'cyan', idle: 'green' }
 const ENDED = new Set(['completed', 'failed', 'killed'])
 const RATE: Record<string, [string, number]> = { five_hour: ['5h', 18_000], seven_day: ['7d', 604_800] }
 // $/MTok in Claude Code's own price shape (ModelCosts). Its catalog is compiled
@@ -100,20 +96,15 @@ export const register: Register = (on, options) => {
     await refreshPlace($)
     await refreshAgents($)
     await readPrices($)
-    const dir = await configDir($)
-    await Promise.all([refreshTabs($, dir), refreshLive($, dir)])
-    await $.command.register({ name: 'sidebar', description: 'Open the panel of sessions and agents' })
+    await $.command.register({ name: 'sidebar', description: "Open the panel of this session's agents" })
     const scan = await readTranscript($)
     if (scan) {
       await update($, totals, () => scan.main)
       await update($, advisor, () => scan.advisor)
       await update($, turns, () => scan.prompts)
     }
-    let ticks = 0
     $.clock.every(1000, () => {
       void $.clock.now().then(t => update($, now, () => t))
-      // The other sessions' statuses, every five seconds.
-      if (++ticks % 5 === 0) void refreshLive($, dir)
       // An image pasted in a way prompt.edit does not report is still caught.
       void syncPreviews($)
     })
@@ -235,7 +226,6 @@ export const register: Register = (on, options) => {
     }
     scheduleGit($)
     await refreshReading($)
-    void configDir($).then(dir => refreshTabs($, dir))
     // The API reports an advisor call's tokens nowhere but the transcript, so
     // it is read again only after a turn that consulted one.
     if (isAdvisorPending) {
@@ -334,7 +324,7 @@ export const register: Register = (on, options) => {
     // on the main screen it would sit above the prompt, a third of it tall.
     if (!isPanelOffered && e.viewport?.isFullscreen === true) {
       isPanelOffered = true
-      if (!(await read($, panelClosed))) void $.ui.open({ id: PANE, title: 'sessions', columns: PANE_COLUMNS }).catch(() => undefined)
+      if (!(await read($, panelClosed))) void $.ui.open({ id: PANE, title: 'agents', columns: PANE_COLUMNS }).catch(() => undefined)
     }
     const [r, m, p, tot, delta, adv, n, t, sp, fast, thumbs] = await Promise.all([
       read($, reading),
@@ -387,6 +377,8 @@ export const register: Register = (on, options) => {
         />
       ) : span.el === 'claude' ? (
         <Client key="claude" module="./claude.tsx" width={widthOf([span])} props={{ isWorking: e.props.isWorking }} />
+      ) : span.n ? (
+        <Client key={`n-${span.n.k}`} module="./count.tsx" width={widthOf([span])} props={countProps({ ...span, n: span.n })} />
       ) : (
         <Box width={widthOf([span])} flexShrink={0}>
           <Button plain key={span.el} onPress={() => void (span.el === 'panel' ? openPanel($) : openUrl($, span.el === 'repo' ? (p?.remote ?? '') : CHANGELOG))}>
@@ -436,7 +428,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'sidebar' }, async $ => {
     const isPlaced = await openPanel($)
-    return { text: isPlaced ? 'Sessions panel opened.' : 'The panel opens beside the transcript in fullscreen, from 110 columns.' }
+    return { text: isPlaced ? 'Agents panel opened.' : 'The panel opens beside the transcript in fullscreen, from 110 columns.' }
   })
 
   on('ui.close', async ($, e, next) => {
@@ -445,14 +437,12 @@ export const register: Register = (on, options) => {
     return r
   }).catch(($, e, next) => next(e))
 
-  // The panel beside the transcript: this project's sessions as tabs (/resume
-  // switches in place, + is /clear), this session's agents with their work,
-  // and the Claude Code sessions running elsewhere on this machine. Claude
-  // Code docks a pane on the right; its layout has no slot on the left.
+  // The panel beside the transcript: this session's agents with their work.
+  // Claude Code docks a pane on the right; its layout has no slot on the left.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const [list, others, id, ags, t] = await Promise.all([read($, tabs), read($, live), read($, sessionId), read($, agents), read($, now)])
+    const [ags, t] = await Promise.all([read($, agents), read($, now)])
     const elements = $.ui.resolve(e)
-    const { Box, Button, Text } = elements
+    const { Box, Text } = elements
     const Client = 'Client' in elements ? elements.Client : undefined
     // The body less the panel's own margin of a cell each side.
     const inner = Math.max(16, e.props.bodyColumns - 2)
@@ -461,12 +451,10 @@ export const register: Register = (on, options) => {
         {span.t}
       </Text>
     )
-    const go = (target: string) => () => void openSession($, target)
     const shown = [
       ...ags.filter(a => a.doneAt === null),
       ...ags.filter(a => a.doneAt !== null).sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0)).slice(0, ENDED_SHOWN),
     ]
-    const elsewhere = others.filter(x => x.sessionId !== id)
     const state = (a: Agent) =>
       a.doneAt === null && Client ? (
         <Client key={`working-${a.id}`} module="./claude.tsx" width={13} props={{ isWorking: true }} />
@@ -486,46 +474,9 @@ export const register: Register = (on, options) => {
         <Text color="gray">{` ${'─'.repeat(Math.max(0, inner - name.length - 1))}`}</Text>
       </Text>
     )
-    // A row's title cut and padded so its note (an age) ends at the edge.
-    const fit = (lead: number, title: string, note: string) => {
-      const room = Math.max(1, inner - lead - note.length - 1)
-      const text = clip(title, room)
-      return text + ' '.repeat(Math.max(1, room - [...text].length + 1))
-    }
     return (
       <Box flexDirection="column" paddingX={1}>
-        {header('SESSIONS')}
-        <Box marginTop={1}>
-          {list.map((tab, i) => (
-            <Button plain key={`tab-${tab.id}`} onPress={go(tab.id)}>
-              {tab.id === id ? (
-                <Text color="claude" inverse bold>{` ${i + 1} `}</Text>
-              ) : (
-                <Text dimColor>{` ${i + 1} `}</Text>
-              )}
-            </Button>
-          ))}
-          <Button plain key="new" onPress={() => void $.command.run({ command: 'clear' }).catch(() => undefined)}>
-            <Text color="claude" bold>
-              {' + '}
-            </Text>
-          </Button>
-        </Box>
-        <Box flexDirection="column" marginTop={1}>
-          {list.map((tab, i) => {
-            const isCurrent = tab.id === id
-            const note = age(t - tab.mtimeMs)
-            return (
-              <Button plain key={`session-${tab.id}`} dimColor={!isCurrent} onPress={go(tab.id)}>
-                <Text color="claude">{isCurrent ? '▎' : ' '}</Text>
-                <Text dimColor>{`${i + 1} `}</Text>
-                <Text bold={isCurrent}>{fit(3, tab.title ?? tab.id.slice(0, 8), note)}</Text>
-                <Text dimColor>{note}</Text>
-              </Button>
-            )
-          })}
-        </Box>
-        <Box marginTop={1}>{header('AGENTS')}</Box>
+        {header('AGENTS')}
         {shown.length === 0 && (
           <Box marginTop={1}>
             <Text dimColor>No agents in this session yet.</Text>
@@ -550,30 +501,24 @@ export const register: Register = (on, options) => {
               {(a.doneAt !== null || t > 0) && <Text dimColor>{formatElapsed((a.doneAt ?? t) - a.startedAt)}</Text>}
             </Box>
             <Text wrap="truncate-end">{a.description || a.type}</Text>
-            {agentRows(a).map(([label, value]) => (
-              <Text wrap="truncate-end">
-                <Text dimColor>{label.padEnd(8)}</Text>
-                {value.map(draw)}
-              </Text>
-            ))}
+            {agentRows(a).map(([label, value]) =>
+              // A row with a figure is a Box, as a Client cannot sit in a Text.
+              Client && value.some(span => span.n) ? (
+                <Box>
+                  <Text dimColor>{label.padEnd(8)}</Text>
+                  {value.map(span =>
+                    span.n ? <Client key={`n-${a.id}-${span.n.k}`} module="./count.tsx" width={widthOf([span])} props={countProps({ ...span, n: span.n })} /> : draw(span),
+                  )}
+                </Box>
+              ) : (
+                <Text wrap="truncate-end">
+                  <Text dimColor>{label.padEnd(8)}</Text>
+                  {value.map(draw)}
+                </Text>
+              ),
+            )}
           </Box>
         ))}
-        {elsewhere.length > 0 && <Box marginTop={1}>{header('ELSEWHERE')}</Box>}
-        {elsewhere.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            {elsewhere.map(x => {
-              const note = age(t - x.since)
-              return (
-                <Button plain key={`live-${x.sessionId}`} onPress={go(x.sessionId)}>
-                  <Text color={STATUS_COLOR[x.status] ?? 'gray'}>{x.status === 'idle' || x.status === 'sdk' ? '○ ' : '● '}</Text>
-                  <Text dimColor>{x.status.padEnd(8)}</Text>
-                  <Text color={x.status === 'sdk' ? 'gray' : 'blue'}>{fit(10, x.name, note)}</Text>
-                  <Text dimColor>{note}</Text>
-                </Button>
-              )
-            })}
-          </Box>
-        )}
       </Box>
     )
   })
@@ -581,11 +526,33 @@ export const register: Register = (on, options) => {
 
 // --- spans: render.rs's ANSI strings as data, so the box can be measured -----
 
-type Span = { t: string; c?: string; b?: boolean; d?: boolean; el?: 'effort' | 'repo' | 'version' | 'bar' | 'claude' | 'panel' }
+type Span = { t: string; c?: string; b?: boolean; d?: boolean; el?: 'effort' | 'repo' | 'version' | 'bar' | 'claude' | 'panel' | 'count'; n?: Count }
+// A figure count.tsx rolls to each new value: `k` names it across redraws.
+type Count = { k: string; v: number; f: Figure; before: string; after: string }
 type Row = { section: number; label: string; content: Span[] }
 
 const s = (t: string, c?: string): Span => ({ t, c })
 const dim = (t: string): Span => ({ t, d: true })
+// `t` is the figure at rest, what the frame measures and count.tsx settles on.
+// A NaN would differ from itself on every redraw and restart its roll forever.
+const num = (k: string, value: number, f: Figure, c?: string, before = '', after = ''): Span => {
+  const v = Number.isFinite(value) ? value : 0
+  return { t: before + figure(f, v) + after, c, el: 'count', n: { k, v, f, before, after } }
+}
+
+// count.tsx's props for a figure: plain data, no key left undefined.
+function countProps(span: Span & { n: Count }) {
+  return {
+    value: span.n.v,
+    figure: span.n.f,
+    before: span.n.before,
+    after: span.n.after,
+    width: widthOf([span]),
+    ...(span.c && { color: span.c }),
+    ...(span.b && { bold: true }),
+    ...(span.d && { dimColor: true }),
+  }
+}
 const SEP = s(' · ', 'gray')
 
 function join(parts: Span[][]): Span[] {
@@ -625,7 +592,7 @@ function pathRow(p: Place | null): Span[] {
   const git = p?.git
   const path: Span[] = [{ ...s(formatCwd(p?.cwd ?? '', p?.home ?? null), 'cyan'), el: p?.remote ? 'repo' : undefined }]
   // The panel's way back once it is closed: a press opens it again.
-  const panel: Span[] = [{ ...dim('sessions ›'), el: 'panel' }]
+  const panel: Span[] = [{ ...dim('agents ›'), el: 'panel' }]
   if (!git) return join([path, panel])
   const isDirty = git.insertions > 0 || git.deletions > 0 || git.untracked > 0
   const counts = [
@@ -640,13 +607,11 @@ function pathRow(p: Place | null): Span[] {
   return join([path, [dim('on'), s(' '), s(git.branch, isDirty ? 'yellow' : 'green'), ...counts], panel])
 }
 
-// Opens the panel with the keyboard, its sessions read afresh; false where the
-// surface cannot place it (the main screen, or under 110 columns).
+// Opens the panel with the keyboard; false where the surface cannot place it
+// (the main screen, or under 110 columns).
 async function openPanel($: $): Promise<boolean> {
   await update($, panelClosed, () => false)
-  const dir = await configDir($)
-  await Promise.all([refreshTabs($, dir), refreshLive($, dir)])
-  return (await $.ui.open({ id: PANE, title: 'sessions', focus: true, columns: PANE_COLUMNS })).isPlaced
+  return (await $.ui.open({ id: PANE, title: 'agents', focus: true, columns: PANE_COLUMNS })).isPlaced
 }
 
 function modelRow(r: Reading | null, m: { model: string; effort: string | null; version: string } | null, isWorking: boolean): Span[] {
@@ -657,8 +622,8 @@ function modelRow(r: Reading | null, m: { model: string; effort: string | null; 
   const used = r?.tokens ?? Math.floor(((r?.window ?? 0) * pct) / 100)
   return join([
     // Drawn by bar.tsx, which animates it; the text holds its width.
-    [{ t: '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled), c: color, el: 'bar' }, s(' '), s(`${Math.round(pct)}%`, color)],
-    r && r.window > 0 ? [s(formatTokens(used), 'white'), s(`/${windowLabel(r.window)}`, 'gray')] : [],
+    [{ t: '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled), c: color, el: 'bar' }, s(' '), num('pct', pct, 'int', color, '', '%')],
+    r && r.window > 0 ? [num('used', used, 'tokens', 'white'), s(`/${windowLabel(r.window)}`, 'gray')] : [],
     [s(m?.model ? prettify(m.model) : 'unknown', 'magenta')],
     m?.effort ? [{ ...s(`${m.effort} effort`, effortColor(m.effort)), el: 'effort' }] : [],
     // Drawn by claude.tsx: the spark's five-cell track and `working`, or `●  ready`.
@@ -671,29 +636,24 @@ function modelRow(r: Reading | null, m: { model: string; effort: string | null; 
 function tokensRow(tot: Tokens, delta: Tokens, fast: Speed): Span[] {
   const { firstOutputMs: first, replyMs: reply } = fast
   return join([
-    bucket('in', '', tot.in, delta.in, 'cyan', 'cyan'),
-    bucket('cache', '↑', tot.cacheWrite, delta.cacheWrite, 'gray', 'yellow'),
-    bucket('cache', '↓', tot.cacheRead, delta.cacheRead, 'gray', 'cyan'),
-    bucket('out', '', tot.out, delta.out, 'magenta', 'magenta'),
+    bucket('in', 'in', '', tot.in, delta.in, 'cyan', 'cyan'),
+    bucket('cacheWrite', 'cache', '↑', tot.cacheWrite, delta.cacheWrite, 'gray', 'yellow'),
+    bucket('cacheRead', 'cache', '↓', tot.cacheRead, delta.cacheRead, 'gray', 'cyan'),
+    bucket('out', 'out', '', tot.out, delta.out, 'magenta', 'magenta'),
     // 10 s and 30 s: across this machine's 895 transcript turns the same wait
     // ran p50 9.4 s, p75 18.9 s, p90 36 s, so red is about the slowest eighth.
-    first === null ? [] : [dim('first output'), s(' '), s(formatWait(first), first < 10_000 ? 'green' : first < 30_000 ? 'yellow' : 'red')],
-    reply === null ? [] : [dim('reply'), s(' '), s(formatWait(reply), 'white')],
+    first === null ? [] : [dim('first output'), s(' '), num('first', first, 'wait', first < 10_000 ? 'green' : first < 30_000 ? 'yellow' : 'red')],
+    reply === null ? [] : [dim('reply'), s(' '), num('reply', reply, 'wait', 'white')],
   ])
 }
 
-// `1.2s` under ten seconds, where a tenth matters; formatElapsed's above.
-function formatWait(ms: number): string {
-  return ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : formatElapsed(ms)
-}
-
 // One token bucket: `in 2.7K (+2.7K)`, bold and coloured while it is moving.
-function bucket(label: string, arrow: string, value: number, plus: number, idle: string, active: string): Span[] {
+function bucket(key: string, label: string, arrow: string, value: number, plus: number, idle: string, active: string): Span[] {
   const arrowPart = arrow ? [s(arrow, 'gray')] : []
-  const added = `(+${formatTokens(plus)})`
+  const added = num(`${key}-delta`, plus, 'tokens', plus > 0 ? 'green' : undefined, '(+', ')')
   return plus > 0
-    ? [{ t: label, c: active, b: true }, ...arrowPart, s(' '), s(formatTokens(value), active), s(' '), s(added, 'green')]
-    : [dim(label), ...arrowPart, s(' '), s(formatTokens(value), idle), s(' '), dim(added)]
+    ? [{ t: label, c: active, b: true }, ...arrowPart, s(' '), num(key, value, 'tokens', active), s(' '), added]
+    : [dim(label), ...arrowPart, s(' '), num(key, value, 'tokens', idle), s(' '), { ...added, d: true }]
 }
 
 // An agent card's rows under its header, each a dim label and its value:
@@ -703,9 +663,9 @@ function agentRows(a: Agent): [string, Span[]][] {
   const rows: [string, Span[]][] = []
   if (a.model) rows.push(['model', join([[s(prettify(a.model), 'magenta')], a.effort ? [s(a.effort, effortColor(a.effort))] : []])])
   if (a.context + a.out > 0) {
-    rows.push(['tokens', join([[s(formatTokens(a.context), 'cyan'), dim(' context')], [s(formatTokens(a.out), 'magenta'), dim(' out')]])])
+    rows.push(['tokens', join([[num('context', a.context, 'tokens', 'cyan'), dim(' context')], [num('out', a.out, 'tokens', 'magenta'), dim(' out')]])])
   }
-  if (a.usd > 0) rows.push(['cost', [s(formatCost(a.usd), a.usd > 0.5 ? 'yellow' : 'green')]])
+  if (a.usd > 0) rows.push(['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? 'yellow' : 'green')]])
   return rows
 }
 
@@ -714,10 +674,10 @@ function agentRows(a: Agent): [string, Span[]][] {
 function advisorRow(a: Advisor): Span[] {
   return join([
     [s(prettify(a.model), 'magenta')],
-    [s(String(a.calls), 'white'), s(' '), dim(a.calls === 1 ? 'call' : 'calls')],
-    [dim('in'), s(' '), s(formatTokens(a.in), 'cyan')],
-    [dim('out'), s(' '), s(formatTokens(a.out), 'magenta')],
-    a.usd === null ? [] : [s(formatCost(a.usd), a.usd > 0.5 ? 'yellow' : 'green')],
+    [num('advisor-calls', a.calls, 'int', 'white'), s(' '), dim(a.calls === 1 ? 'call' : 'calls')],
+    [dim('in'), s(' '), num('advisor-in', a.in, 'tokens', 'cyan')],
+    [dim('out'), s(' '), num('advisor-out', a.out, 'tokens', 'magenta')],
+    a.usd === null ? [] : [num('advisor-usd', a.usd, 'usd', a.usd > 0.5 ? 'yellow' : 'green')],
   ])
 }
 
@@ -737,15 +697,17 @@ function spendRow(x: Spend, r: Reading | null): Span[] {
   if (seen === 0) return []
   const earlier = (r?.costUsd ?? 0) - seen
   const part = (label: string, usd: number): Span[] =>
-    usd >= 0.00005 ? [dim(label), s(' '), s(formatCost(usd), usd > 0.5 ? 'yellow' : 'green')] : []
+    usd >= 0.00005 ? [dim(label), s(' '), num(`spend-${label}`, usd, 'usd', usd > 0.5 ? 'yellow' : 'green')] : []
   return join([part('main', x.main), part('agents', x.agents), part('background', x.background), part('earlier', earlier)])
 }
 
 function costRow(r: Reading | null, m: { startedAt: number } | null, n: number, t: number): Span[] {
   const cost = r?.costUsd
   return join([
-    cost != null ? [s(formatCost(cost), cost > 0.5 ? 'yellow' : 'green')] : [],
-    n > 0 ? [s(String(n), 'white'), s(' '), dim(n === 1 ? 'message' : 'messages')] : [],
+    cost != null ? [num('cost', cost, 'usd', cost > 0.5 ? 'yellow' : 'green')] : [],
+    n > 0 ? [num('messages', n, 'int', 'white'), s(' '), dim(n === 1 ? 'message' : 'messages')] : [],
+    // The session's age and the windows' resets step every second: drawn
+    // plainly, as a roll would never settle.
     m && t > 0 ? [s(formatElapsed(t - m.startedAt), 'white')] : [],
     ...(r?.rate ?? []).map(w => rateWindow(w, t)),
   ])
@@ -763,8 +725,8 @@ function rateWindow(w: RateWindow, t: number): Span[] {
   return [
     dim(label),
     s(' '),
-    s(`${pct}%`, color),
-    ...(Math.abs(burn) >= 1 ? [s(' '), s(`${burn > 0 ? '⇡' : '⇣'}${Math.abs(burn)}%`, burn > 0 ? 'red' : 'green')] : []),
+    num(`rate-${w.kind}`, pct, 'int', color, '', '%'),
+    ...(Math.abs(burn) >= 1 ? [s(' '), num(`rate-${w.kind}-burn`, Math.abs(burn), 'int', burn > 0 ? 'red' : 'green', burn > 0 ? '⇡' : '⇣', '%')] : []),
     ...(isInWindow ? [s(' '), s(`(${formatDuration(remaining)})`, 'gray')] : []),
   ]
 }
@@ -1277,13 +1239,6 @@ function toReading(u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>): Re
 
 // --- formatters, ported from src/render.rs ---------------------------------
 
-function formatTokens(n: number): string {
-  if (n >= 1e9) return `${Math.floor(n / 1e9)}.${String(Math.floor((n % 1e9) / 1e7)).padStart(2, '0')}B`
-  if (n >= 1e6) return `${Math.floor(n / 1e6)}.${Math.floor((n % 1e6) / 1e5)}M`
-  if (n >= 1e3) return `${Math.floor(n / 1e3)}.${Math.floor((n % 1e3) / 100)}K`
-  return String(n)
-}
-
 function windowLabel(size: number): string {
   const k = Math.floor(size / 1000)
   return k >= 1000 ? `${Math.floor(k / 1000)}M` : `${k}K`
@@ -1321,19 +1276,6 @@ function formatCwd(cwd: string, home: string | null): string {
   }
   const parts = path.split('/').filter(Boolean)
   return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : path
-}
-
-function formatCost(usd: number): string {
-  if (Math.abs(usd) < 1000) return `$${usd.toFixed(4)}`
-  return `$${usd.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
-}
-
-function formatElapsed(ms: number): string {
-  const secs = Math.max(0, Math.floor(ms / 1000))
-  const pad = (v: number) => String(v).padStart(2, '0')
-  if (secs >= 3600) return `${Math.floor(secs / 3600)}h${pad(Math.floor((secs % 3600) / 60))}m`
-  if (secs >= 60) return `${Math.floor(secs / 60)}m${pad(secs % 60)}s`
-  return `${secs}s`
 }
 
 function formatDuration(secs: number): string {

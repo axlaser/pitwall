@@ -38,7 +38,7 @@ const BAND = {
 }
 
 const PANE = {
-  title: 'sessions',
+  title: 'agents',
   isFocused: false,
   bodyColumns: 40,
   placement: 'dock' as const,
@@ -88,10 +88,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.prompt.submit({ ...typed, text: '/effort max', command: { name: 'effort', args: 'max' } })
 
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    // A figure is drawn by its own count.tsx, found by its key.
+    const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
 
-    for (const text of ['42%', '84.0K', '/200K', '$0.1234', '(+2.7K)', '1 message', '5h', 'first output 7.3s · reply 15s']) {
+    for (const text of ['/200K', 'message', '5h', 'first output', 'reply']) {
       expect((await ui.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     }
+    const want = { pct: '42%', used: '84.0K', cost: '$0.1234', 'in-delta': '(+2.7K)', messages: '1', first: '7.3s', reply: '15s' }
+    for (const [key, text] of Object.entries(want)) expect(`${key} ${await figure(key)}`).toBe(`${key} ${text}`)
     expect(await ui.find({ key: 'compact' })).toBeUndefined()
   })
 
@@ -197,10 +201,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
 
-    for (const text of ['~/repo', 'main', '↑2', '+5', '-1', '~1', 'Opus 5.5', 'v2.1.299', '┏━', '┣━', '┼', '1 message']) {
+    for (const text of ['~/repo', 'main', '↑2', '+5', '-1', '~1', 'Opus 5.5', 'v2.1.299', '┏━', '┣━', '┼', 'message']) {
       expect((await ui.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     }
+    expect(await figure('messages')).toBe('1')
     expect(await ui.find({ type: 'Text', text: 'xhigh effort', in: 'effort' })).toBeDefined()
 
     // Every line of the frame is the same number of cells, controls included,
@@ -214,11 +220,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const lines = ((await ui.drawn()) as { children: unknown[] }).children.filter(Boolean)
     expect(new Set(lines.map(cells)).size).toBe(1)
     // Seeded from the transcript: m1 once, the subagent's row and the torn line left out.
-    expect(await ui.find({ type: 'Text', text: 'in 100 (+0)' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'out 7 (+0)' })).toBeDefined()
     // The advisor's calls: Fable 5.1's from the table and Fable 6's from
     // ~/.claude.json, each $10 / $50 on 1,000 in and 100 out: $0.0150 apiece.
-    expect(await ui.find({ type: 'Text', text: 'Fable 6 · 2 calls · in 2.0K · out 200 · $0.0300' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Fable 6' })).toBeDefined()
+    const want = {
+      in: '100',
+      'in-delta': '(+0)',
+      out: '7',
+      'out-delta': '(+0)',
+      'advisor-calls': '2',
+      'advisor-in': '2.0K',
+      'advisor-out': '200',
+      'advisor-usd': '$0.0300',
+    }
+    for (const [key, text] of Object.entries(want)) expect(`${key} ${await figure(key)}`).toBe(`${key} ${text}`)
 
     // A left click steps round the levels, max to low; a right click does nothing.
     const chip = async () => (await ui.find({ type: 'Text', in: 'effort' }))?.text
@@ -255,8 +270,33 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
 
-    const text = 'main $0.2500 · agents $0.1000 · background $0.0100 · earlier $0.0400'
-    expect((await ui.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
+    const want = { main: '$0.2500', agents: '$0.1000', background: '$0.0100', earlier: '$0.0400' }
+    for (const [key, text] of Object.entries(want)) {
+      expect(`${key} ${(await ui.find({ type: 'Text', in: `n-spend-${key}` }))?.text}`).toBe(`${key} ${text}`)
+    }
+  })
+
+  test(`${surface}: a figure rolls to its new value, holding the cells it settles in`, async ($, on) => {
+    engine(on)
+    await $.session.measure({ context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits: [], changed: ['context'] })
+    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const used = async () => (await ui.find({ type: 'Text', in: 'n-used' }))?.text ?? ''
+    // Mounted, it shows its value at once.
+    expect(await used()).toBe('84.0K')
+
+    await $.session.measure({ context: { tokens: 120_000, window: 200_000, percent: 60 }, rateLimits: [], changed: ['context'] })
+    await ui.advance(200)
+    const mid = await used()
+    expect(mid.length).toBe('120.0K'.length)
+    const at = Number.parseFloat(mid)
+    expect(at > 84 && at < 120 ? 'between' : mid).toBe('between')
+    await ui.advance(1000)
+    expect(await used()).toBe('120.0K')
+
+    // Down past a power of ten the roll is wider than its cells: the target shows.
+    await $.session.measure({ context: { tokens: 9_000, window: 200_000, percent: 4 }, rateLimits: [], changed: ['context'] })
+    await ui.advance(40)
+    expect(await used()).toBe('9.0K')
   })
 
   test(`${surface}: the bar glides to the reading and Claude squiggles while it works`, async ($, on) => {
@@ -323,61 +363,16 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.turn.complete({ answer: 'done', durationMs: 70_000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
 
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
-    for (const text of ['✓ done', 'Explore', 'Org pricing', '1m10s', 'Opus 5.5 · xhigh', '42.0K context · 6.0K out', '$0.3500']) {
+    for (const text of ['✓ done', 'Explore', 'Org pricing', '1m10s', 'Opus 5.5 · xhigh', ' context', ' out']) {
       expect((await ui.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
+    }
+    const want = { context: '42.0K', out: '6.0K', usd: '$0.3500' }
+    for (const [key, text] of Object.entries(want)) {
+      expect(`${key} ${(await ui.find({ type: 'Text', in: `n-a1-${key}` }))?.text}`).toBe(`${key} ${text}`)
     }
     // The box above the prompt no longer carries agents.
     const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
     expect(await band.find({ type: 'Text', text: 'Org pricing' })).toBeUndefined()
-  })
-
-  test(`${surface}: the panel's tabs switch sessions with /resume, and name one another terminal holds`, async ($, on) => {
-    engine(on)
-    mock.clock(on)
-    mock.env(on, { HOME: '/home/me', OS: 'Windows_NT' })
-    on('session.root', () => ({ value: 'C:\\repo' }))
-    on('session.id', () => ({ value: 's1' }))
-    const file = (name: string, mtimeMs: number, size = 5000) => ({ name, kind: 'file' as const, size, mtimeMs, isLink: false })
-    // Three conversations and a bridge stub; two running sessions, this one and
-    // one in another terminal.
-    on('fs.list', ($, e) => ({
-      value: e.path.endsWith('sessions')
-        ? [file('100.json', 0), file('200.json', 0), file('300.json', 0)]
-        : [file('s1.jsonl', 3000), file('s2.jsonl', 2000), file('s3.jsonl', 1000), file('stub.jsonl', 4000, 200)],
-    }))
-    const record = (sessionId: string, cwd: string, status: string) => JSON.stringify({ sessionId, cwd, kind: 'interactive', status, updatedAt: 1, name: `${sessionId}-name` })
-    on('fs.read', ($, e) => ({
-      value: e.path.endsWith('300.json')
-        ? JSON.stringify({ sessionId: 's9', cwd: '/repo', kind: 'interactive', entrypoint: 'sdk-py', name: 'repo-e8', startedAt: 1 })
-        : e.path.endsWith('100.json') ? record('s1', 'C:\\repo', 'busy') : record('s3', 'C:\\other', 'idle'),
-    }))
-    // findstr names each file before the rows it found there; a /rename wins.
-    const dir = 'C:\\home\\me\\.claude\\projects\\C--repo'
-    const found = [
-      `${dir}\\s1.jsonl:{"type":"ai-title","aiTitle":"Old name"}`,
-      `${dir}\\s1.jsonl:{"type":"custom-title","customTitle":"Mod work"}`,
-      `${dir}\\s2.jsonl:{"type":"ai-title","aiTitle":"Fix the leak"}`,
-    ]
-    on('process.run', () => ({ value: { exitCode: 0, stdout: found.join('\r\n'), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
-    const ran: string[] = []
-    on('command.run', ($, e) => (ran.push(`${e.command} ${e.args}`), { text: '' }))
-    const toasts: string[] = []
-    on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
-
-    await $.command.run({ command: 'sidebar', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
-    for (const text of ['1 Mod work', '2 Fix the leak', '3 s3', 'idle', 's3-name', 'sdk', 'repo-e8']) {
-      expect((await ui.find({ type: 'Button', text })) ? text : `missing: ${text}`).toBe(text)
-    }
-    expect(await ui.find({ key: 'tab-stub' })).toBeUndefined()
-
-    await ui.press({ key: 'tab-s2' })
-    await ui.press({ key: 'tab-s1' })
-    await ui.press({ key: 'tab-s3' })
-    await ui.press({ key: 'new' })
-    await ui.press({ key: 'live-s9' })
-    expect(ran.filter(r => r !== 'sidebar ')).toEqual(['resume s2', 'clear '])
-    expect(toasts).toEqual(['That session is open in another terminal (s3-name)', 'That session is run by a program, not a terminal (repo-e8)'])
   })
 
   // Raster is the terminal's alone; the desktop draws no preview.
@@ -418,7 +413,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   // shortcut: the kit raises no person's close, so the gate that keeps a
   // closed panel shut across reloads goes untested here.
-  test(`${surface}: the box's sessions control opens the panel with the keyboard`, async ($, on) => {
+  test(`${surface}: the box's agents control opens the panel with the keyboard`, async ($, on) => {
     const opened: (true | undefined)[] = []
     engine(on, opened)
     mock.env(on, { HOME: '/home/me' })
@@ -426,7 +421,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('session.id', () => ({ value: 's1' }))
 
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
-    expect((await ui.find({ key: 'panel' }))?.text).toBe('sessions ›')
+    expect((await ui.find({ key: 'panel' }))?.text).toBe('agents ›')
     await ui.press({ key: 'panel' })
     expect(opened).toEqual([true])
   })
