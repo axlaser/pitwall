@@ -10,9 +10,11 @@ import type { EngineInterface } from 'claude-code'
 // Nothing in the plugin API writes to the terminal, and a child of the engine
 // has no terminal of its own, so no /dev/tty to write to: the child writes to
 // the device of the first of its forebears that has one, Claude Code itself.
-// Where there is none (Windows, the desktop app, a session the background
-// daemon runs), or no `sh` to look, nothing changes: a missing feature, never
-// an error. The colour reaches the child as data, never as script text.
+// On Windows the child joins Claude Code's console instead (it is the child's
+// parent: the engine runs in it) and writes there; ConPTY passes the sequence
+// on. Where there is none (the desktop app, a session the background daemon
+// runs), or no `sh` or PowerShell to look, nothing changes: a missing feature,
+// never an error. The colour reaches the child as data, never as script text.
 
 type $ = EngineInterface
 
@@ -31,6 +33,29 @@ while [ -z "$tty" ] && [ "$n" -lt 8 ] && [ "$p" -gt 1 ] 2>/dev/null; do
 done
 [ -n "$tty" ] && [ -w "$tty" ] || exit 1
 printf '\\033]%s\\007' "$STATUSBOX_OSC" > "$tty" && printf '%s' "$tty"
+`
+// Windows: leaves its own console for its parent's, writes the sequence to it
+// and prints CONOUT$; exits 1 where the parent has none, or one that takes no
+// sequences (it would print them). Compiling the calls takes about 400 ms.
+const PS = `
+trap { exit 1 }
+Add-Type -Name Console -Namespace Statusbox -MemberDefinition @'
+[DllImport("kernel32.dll")] static extern bool FreeConsole();
+[DllImport("kernel32.dll")] static extern bool AttachConsole(int pid);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+[DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr h, out uint mode);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool WriteConsoleW(IntPtr h, string s, int n, out int written, IntPtr reserved);
+public static bool Paint(string osc) {
+  FreeConsole();
+  if (!AttachConsole(-1)) return false;
+  IntPtr h = CreateFileW("CONOUT$", 0xC0000000, 2, IntPtr.Zero, 3, 0, IntPtr.Zero);
+  uint mode;
+  int n;
+  return GetConsoleMode(h, out mode) && (mode & 4) != 0 && WriteConsoleW(h, osc, osc.Length, out n, IntPtr.Zero);
+}
+'@
+if (-not [Statusbox.Console]::Paint([char]27 + ']' + $env:STATUSBOX_OSC + [char]7)) { exit 1 }
+'CONOUT$'
 `
 const TIMEOUT_MS = 2000
 // How long a write waits after its colour is asked for. A theme switched
@@ -89,8 +114,10 @@ async function paintTo($: $, color: string | null): Promise<void> {
     if (painted === undefined) painted = await read($, kept)
     if (tty === null || color === painted) return
     const osc = color === null ? '111' : `11;${color}`
-    const r = await $.process.run(['/bin/sh', '-c', SH], { timeoutMs: TIMEOUT_MS, env: { STATUSBOX_OSC: osc, STATUSBOX_TTY: tty ?? '' } })
-    tty = r.exitCode === 0 && r.stdout.startsWith('/dev/') ? r.stdout : null
+    const argv = (await $.env.get('OS')) === 'Windows_NT' ? ['powershell', '-NoProfile', '-NonInteractive', '-Command', PS] : ['/bin/sh', '-c', SH]
+    const r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS, env: { STATUSBOX_OSC: osc, STATUSBOX_TTY: tty ?? '' } })
+    const out = r.stdout.trim()
+    tty = r.exitCode === 0 && (out.startsWith('/dev/') || out === 'CONOUT$') ? out : null
     if (tty === null) return
     painted = color
     await update($, kept, () => color)

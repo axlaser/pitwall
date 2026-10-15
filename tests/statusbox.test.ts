@@ -1259,10 +1259,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
   // A session on the theme given, the box drawn. The /config rows are held
   // here as the menu keeps them, each change taken, and each write to the
   // terminal is recorded with the device it went to.
-  const themed = async ($: Engine, on: On, theme: string) => {
+  const themed = async ($: Engine, on: On, theme: string, os?: string) => {
     engine(on)
     const clock = mock.clock(on)
-    mock.env(on, { HOME: '/home/me' })
+    mock.env(on, os ? { HOME: '/home/me', OS: os } : { HOME: '/home/me' })
     on('session.start', ($, e) => ({ cwd: e.cwd }))
     on('session.model', () => ({ value: 'claude-sonnet-6' }))
     on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
@@ -1277,9 +1277,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.list', () => ({ value: [] }))
     const writes: [string | undefined, string | undefined][] = []
     on('process.run', ($, e) => {
-      const isWrite = e.argv[0] === '/bin/sh'
+      const isWrite = e.init?.env?.STATUSBOX_OSC !== undefined
       if (isWrite) writes.push([e.init?.env?.STATUSBOX_OSC, e.init?.env?.STATUSBOX_TTY])
-      return { value: { exitCode: isWrite ? 0 : 1, stdout: isWrite ? '/dev/ttys009' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      const device = e.argv[0] === 'powershell' ? 'CONOUT$\r\n' : '/dev/ttys009'
+      return { value: { exitCode: isWrite ? 0 : 1, stdout: isWrite ? device : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     })
     const rows = new Map<string, ConfigValue>([['theme', theme]])
     const engineRow = { label: 'Theme', kind: 'choice' as const, isLocked: false, provider: { plugin: 'engine', tier: 'core' as const } }
@@ -1342,6 +1343,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const waiting = writes.length
     await clock.advance(1000)
     expect([waiting, writes.map(([osc]) => osc)]).toEqual(surface === 'terminal' ? [1, ['11;#1a1b26', '11;#282a36']] : [0, []])
+  })
+
+  // Windows has no /dev: PowerShell writes to Claude Code's console instead.
+  test(`${surface}: on Windows a skin paints the background through Claude Code's console`, async ($, on) => {
+    const { clock, writes } = await themed($, on, 'custom:statusbox:tokyo-night-dark', 'Windows_NT')
+    await clock.advance(1000)
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'abc', resume: { id: 'abc' } })
+    expect(writes).toEqual(surface === 'terminal' ? [['11;#1a1b26', ''], ['111', 'CONOUT$']] : [])
   })
 
   test(`${surface}: classic leaves the terminal's background alone`, async ($, on) => {
