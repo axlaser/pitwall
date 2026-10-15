@@ -53,6 +53,8 @@ const PANE_COLUMNS = 40
 // The chevrons' turns, shut to open: the sidebar's faces the panel's way, a
 // dropdown's points down shut and up open.
 const SIDEBAR_TURN = ['›', '>', '|', '<', '‹']
+// The cells claude.tsx draws while Claude works: the spark, a space, the word.
+const WORKING = '  Working'
 const MENU_TURN = ['▾', '▸', '▴']
 // The model each family alias names, by its picker name (`opus` -> `Opus 5.5`),
 // read from Claude Code's model catalog each time the model picker opens.
@@ -95,39 +97,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
-    const [usage, model, version, settings, n, t] = await Promise.all([
-      $.session.usage(),
-      $.session.model(),
-      $.session.version(),
-      $.settings.read(),
-      $.session.turns(),
-      $.clock.now(),
-    ])
-    const setEffort = (settings as Record<string, unknown>).effortLevel
-    // A reload keeps what turn.step learned: the resolved id beats /model's label.
-    await update($, meta, m => ({
-      model: m?.model ?? model,
-      effort: m?.effort ?? (typeof setEffort === 'string' ? setEffort : null),
-      sessionEffort: m?.sessionEffort ?? null,
-      version: version.base ?? version.version,
-      startedAt: usage.startedAt,
-    }))
-    await update($, reading, () => toReading(usage))
-    // A reload cancels the timers: nothing is left half open.
-    await update($, menu, () => null)
-    await update($, motion, () => ({}))
-    await update($, turns, () => n)
-    await update($, now, () => t)
-    await refreshPlace($)
-    await refreshAgents($)
-    await readPrices($)
-    const kept = await $.store.get('folded').catch(() => undefined)
-    if (Array.isArray(kept)) await update($, folded, () => kept.filter((x): x is string => typeof x === 'string'))
+    await seedSession($)
     await $.command.register({ name: 'sidebar', description: 'Open the side panel: usage, the session and its cost, the prompt cache, the advisor and agents' })
-    // A session the background daemon runs (the agent view's, or a spare it
-    // hands one later) starts the plugin before its conversation arrives, the
-    // transcript written ~2 s on: then the clock waits for it, and seeds once.
-    isAwaitingConversation = !(await seed($)) && n === 0
     $.clock.every(1000, () => {
       void $.clock
         .now()
@@ -138,6 +109,18 @@ export const register: Register = (on, options) => {
       if (isAwaitingConversation) void awaitConversation($).catch(() => undefined)
     })
     return r
+  })
+
+  // A /resume, a /clear or a fork goes on in this process under another
+  // session: the engine drops every value a plugin keeps as the last one ends
+  // and raises no session.start for this one, so the box and the panel would
+  // stay blank, the model unknown, until something wrote them again. The
+  // classic SessionStart it does raise seeds it, off the hook's path; one the
+  // session was already seeded for (`claude --resume` starting) is left alone.
+  on('classic.SessionStart', async ($, e, next) => {
+    const isAnother = e.source === 'resume' || e.source === 'clear' || e.source === 'fork'
+    if (isAnother && e.session_id !== seededFor) void seedSession($).catch(() => undefined)
+    return next(e)
   })
 
   on('session.end', async ($, e, next) => {
@@ -250,7 +233,12 @@ export const register: Register = (on, options) => {
     // session.measure fires once per turn; the binary redrew mid-turn, so read
     // the figures again after every main-loop request.
     if (id === undefined) await refreshReading($)
-    if (result.serverToolUses?.some(use => use.name === 'advisor')) isAdvisorPending = true
+    // The advisor's card takes a call as soon as the response that made it is
+    // whole, not at the turn's end; its turn reads it once more as it ends.
+    if (result.serverToolUses?.some(use => use.name === 'advisor')) {
+      isAdvisorPending = true
+      void refreshAdvisor($).catch(() => undefined)
+    }
     return result
   })
 
@@ -265,19 +253,19 @@ export const register: Register = (on, options) => {
     await refreshReading($)
     await measureTranscript($)
     // The API reports an advisor call's tokens nowhere but the transcript, so
-    // it is read again only after a turn that consulted one.
+    // it is read again only after a response that consulted one, and once
+    // more as that turn ends, should the transcript have been behind it.
     if (isAdvisorPending) {
       isAdvisorPending = false
-      const scan = await readTranscript($)
-      if (scan) await update($, advisor, () => scan.advisor)
+      await refreshAdvisor($)
     }
     return r
   })
 
-  // A click on a chip's chevron: the sidebar's toggles the panel, the model's
-  // and the effort's their dropdowns.
-  on('ui.message', { element: /^chevron-/ }, async ($, e, next) => {
-    const kind = e.element.slice('chevron-'.length)
+  // A click on a chip's chevron, or on the model's words (chip.tsx): the
+  // sidebar's toggles the panel, the model's and the effort's their dropdowns.
+  on('ui.message', { element: /^(chevron|chip)-/ }, async ($, e, next) => {
+    const kind = e.element.replace(/^(chevron|chip)-/, '')
     if (kind === 'panel') await togglePanel($)
     else if (kind === 'model' || kind === 'effort') await toggleMenu($, kind)
     return next(e)
@@ -396,7 +384,7 @@ export const register: Register = (on, options) => {
       isPanelOffered = true
       if (!(await read($, panelClosed))) {
         void $.ui
-          .open({ id: PANE, title: 'sidebar', columns: PANE_COLUMNS })
+          .open({ id: PANE, title: 'SIDEBAR', columns: PANE_COLUMNS })
           .then(() => $.ui.invalidate('ui.render'))
           .catch(() => undefined)
       }
@@ -451,19 +439,42 @@ export const register: Register = (on, options) => {
     // as what it opens opens; the two share a hover group, and a click on the
     // chevron does what the Button does. Its span ends with the chevron's two
     // cells.
+    // The model's and the effort's chips, words and chevron, are chip.tsx's,
+    // which glistens them while Claude works; an effort's glow washes from
+    // the hex nearest its theme colour.
     const chip = (span: Span, kind: 'panel' | 'model' | 'effort', isOpen: boolean, turn: string[], onPress: () => Promise<void>) => (
       <Box width={widthOf([span])} flexShrink={0}>
-        <Button plain key={kind} hover={{ scope: kind, inverse: true }} onPress={() => void onPress().catch(() => undefined)}>
-          {draw({ ...span, t: span.t.slice(0, -2) })}
-        </Button>
-        <Client key={`chevron-${kind}`} module="./chevron.tsx" width={2} props={{ isOpen, frames: turn, scope: kind, ...(span.c && { color: span.c }) }} />
+        {kind === 'panel' ? (
+          <Button plain key={kind} hover={{ scope: kind, inverse: true }} onPress={() => void onPress().catch(() => undefined)}>
+            {draw({ ...span, t: span.t.slice(0, -2) })}
+          </Button>
+        ) : (
+          <Client
+            key={`chip-${kind}`}
+            module="./chip.tsx"
+            width={widthOf([span])}
+            props={{
+              label: span.t.slice(0, -2),
+              color: span.c ?? 'magenta',
+              ...(kind === 'effort' && span.v && { shine: effortShine(span.v) }),
+              scope: kind,
+              isShining: e.props.isWorking,
+              isOpen,
+              frames: turn,
+            }}
+          />
+        )}
+        {kind === 'panel' && (
+          <Client key={`chevron-${kind}`} module="./chevron.tsx" width={2} props={{ isOpen, frames: turn, scope: kind, ...(span.c && { color: span.c }) }} />
+        )}
       </Box>
     )
     const control = (span: Span) =>
       span.el === 'model' || span.el === 'effort' ? (
         chip(span, span.el, open?.kind === span.el && !open.isClosing, MENU_TURN, () => toggleMenu($, span.el as Menu['kind']))
       ) : span.el === 'panel' ? (
-        chip(span, 'panel', isPanelOpen, SIDEBAR_TURN, () => togglePanel($))
+        // Its chevron turns back as the panel starts sliding out.
+        chip(span, 'panel', isPanelOpen && moving.panel?.to !== 0, SIDEBAR_TURN, () => togglePanel($))
       ) : span.el === 'wire' && span.w ? (
         <Client
           key={span.w.isArrow ? 'wire-arrow' : 'wire'}
@@ -472,16 +483,17 @@ export const register: Register = (on, options) => {
           props={{ ...span.w, width: widthOf([span]), color: span.c ?? 'gray', isClosing: open?.isClosing === true }}
         />
       ) : span.el === 'pick' && open ? (
-        // A choice is one Client, so it ripples in and out, and an effort
-        // level plays its flourish wherever the pointer lands on it.
+        // A choice is one Client, so it ripples in and out and an effort
+        // level plays its flourish; its Button is keyed as the Client is.
         <Client
           key={`pick-${open.kind}-${span.v}`}
           module="./pill.tsx"
           width={widthOf([span])}
           props={{
+            id: `pick-${open.kind}-${span.v}`,
             label: open.kind === 'effort' ? (span.v ?? '') : span.t.slice(1, -1),
             level: open.kind === 'effort' ? (span.v ?? '') : '',
-            color: open.kind === 'effort' ? effortColor(span.v ?? '') : 'magenta',
+            color: open.kind === 'effort' ? effortColor(span.v ?? '') : modelColor(span.v ?? ''),
             isPicked: span.i === true,
             isInForce: span.v === inForce,
             index: open.options.indexOf(span.v ?? ''),
@@ -611,7 +623,7 @@ export const register: Register = (on, options) => {
     ]
     const state = (a: Agent) =>
       a.doneAt === null && Client ? (
-        <Client key={`working-${a.id}`} module="./claude.tsx" width={11} props={{ isWorking: true }} />
+        <Client key={`working-${a.id}`} module="./claude.tsx" width={WORKING.length} props={{ isWorking: true }} />
       ) : a.doneAt === null ? (
         <Text color="claude">Working</Text>
       ) : a.status === 'completed' ? (
@@ -662,10 +674,10 @@ export const register: Register = (on, options) => {
       sections.push({
         name: 'USAGE',
         summary: r.rate.map(w => `${rateFacts(w, t).name} ${Math.round(w.percentUsed)}%`).join(' · '),
-        // The card's gap and border; each window its name, bar and reset, apart.
-        rows: 3 + r.rate.reduce((sum, w, i) => sum + (i === 0 ? 0 : 1) + 2 + (rateFacts(w, t).remaining === null ? 0 : 1), 0),
+        // The card's border; each window its name, bar and reset, apart.
+        rows: 2 + r.rate.reduce((sum, w, i) => sum + (i === 0 ? 0 : 1) + 2 + (rateFacts(w, t).remaining === null ? 0 : 1), 0),
         body: clip => (
-        <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor="blue" {...held(clip)}>
+        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="blue" {...held(clip)}>
           <Box flexDirection="column" flexShrink={0}>
             {r.rate.map((w, i) => {
               const f = rateFacts(w, t)
@@ -722,11 +734,11 @@ export const register: Register = (on, options) => {
     sections.push({
       name: 'SESSION',
       summary: [`${n} ${n === 1 ? 'message' : 'messages'}`, ...(total === null ? [] : [figure('usd', total)])].join(' · '),
-      // The card's gap and border, the messages, the speed, the transcript;
-      // the cost, its bar and its parts, apart.
-      rows: 4 + (hasSpeed ? 1 : 0) + (bytes === null ? 0 : 1) + (total === null ? 0 : 2 + (parts.length > 0 ? 1 : 0) + parts.length),
+      // The card's border, the messages, the speed, the transcript; the cost,
+      // its bar and its parts, apart.
+      rows: 3 + (hasSpeed ? 1 : 0) + (bytes === null ? 0 : 1) + (total === null ? 0 : 2 + (parts.length > 0 ? 1 : 0) + parts.length),
       body: clip => (
-      <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor="claude" {...held(clip)}>
+      <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="claude" {...held(clip)}>
         <Box flexDirection="column" flexShrink={0}>
           <Box justifyContent="space-between">
             {figures('session', [num('messages', n, 'int', 'white'), dim(n === 1 ? ' message' : ' messages')])}
@@ -793,11 +805,11 @@ export const register: Register = (on, options) => {
       sections.push({
         name: 'CACHE',
         summary: isWarm ? `● warm · ${formatElapsed(left)} left` : '○ cold',
-        // The card's gap and border, warm or cold, the bar, the next message's two prices.
-        rows: 4 + (isWarm ? 1 : 0) + (reread !== null && rewrite !== null && tokens !== null ? 2 : 0),
+        // The card's border, warm or cold, the bar, the next message's two prices.
+        rows: 3 + (isWarm ? 1 : 0) + (reread !== null && rewrite !== null && tokens !== null ? 2 : 0),
         tint: isWarm ? 'green' : 'gray',
         body: clip => (
-        <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor={isWarm ? 'green' : 'gray'} {...held(clip)}>
+        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor={isWarm ? 'green' : 'gray'} {...held(clip)}>
           <Box flexDirection="column" flexShrink={0}>
             <Box justifyContent="space-between">
               <Text color={isWarm ? 'green' : 'gray'} bold>{isWarm ? '● warm' : '○ cold'}</Text>
@@ -827,10 +839,10 @@ export const register: Register = (on, options) => {
       sections.push({
         name: 'ADVISOR',
         summary: [`${adv.calls} ${adv.calls === 1 ? 'call' : 'calls'}`, ...(adv.usd === null ? [] : [figure('usd', adv.usd)])].join(' · '),
-        // The card's gap and border, the model and calls, its rows, the share's bar.
-        rows: 4 + advisorRows(adv, share).length + (share === null ? 0 : 1),
+        // The card's border, the model and calls, its rows, the share's bar.
+        rows: 3 + advisorRows(adv, share).length + (share === null ? 0 : 1),
         body: clip => (
-        <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="double" borderColor="magenta" {...held(clip)}>
+        <Box flexDirection="column" paddingX={1} borderStyle="double" borderColor="magenta" {...held(clip)}>
           <Box flexDirection="column" flexShrink={0}>
             <Box justifyContent="space-between">
               <Text color="magenta" bold>{`✶ ${prettify(adv.model)}`}</Text>
@@ -855,22 +867,18 @@ export const register: Register = (on, options) => {
     sections.push({
       name: 'AGENTS',
       summary: working > 0 ? `${working} working` : ags.length > 0 ? `${ags.length} done` : 'none yet',
-      // The empty line and its gap; else each card's gap and border, its state,
-      // description and rows.
-      rows: shown.length === 0 ? 2 : shown.reduce((sum, a) => sum + 5 + agentRows(a).length, 0),
+      // The empty line; else each card's border, state, description and rows,
+      // the cards a row apart.
+      rows: shown.length === 0 ? 1 : shown.reduce((sum, a, i) => sum + (i === 0 ? 0 : 1) + 4 + agentRows(a).length, 0),
       tint: working > 0 ? 'claude' : 'gray',
       body: () => (
       <Box flexDirection="column">
-        {shown.length === 0 && (
-          <Box marginTop={1}>
-            <Text dimColor>No agents in this session yet.</Text>
-          </Box>
-        )}
-        {shown.map(a => (
+        {shown.length === 0 && <Text dimColor>No agents in this session yet.</Text>}
+        {shown.map((a, i) => (
           <Box
             key={`agent-${a.id}`}
             flexDirection="column"
-            marginTop={1}
+            marginTop={i === 0 ? 0 : 1}
             paddingX={1}
             borderStyle="round"
             borderColor={a.doneAt === null ? 'claude' : a.status === 'completed' ? 'green' : 'red'}
@@ -891,38 +899,56 @@ export const register: Register = (on, options) => {
       ),
     })
 
+    // Sliding in or out, the contents stand off to the right by a share of
+    // the width (offPanel), the outer Box cutting what passes the panel's
+    // edge, floor to ceiling. Still, they stand at none, in the same two
+    // Boxes, so the Clients inside are never drawn afresh. While they slide,
+    // an edge like the dock's rides their left margin, the full height in
+    // view: it sweeps in to meet the dock's own and out from it, the dock's
+    // own being Claude Code's, which cannot move. In place it would double
+    // the dock's, so it goes.
+    const columns = e.props.bodyColumns
+    const offset = moving.panel ? Math.round(columns * offPanel(moving.panel)) : 0
+    const { offset: top, bodyRows } = e.props.scroll
     return (
-      <Box flexDirection="column" paddingX={1}>
-        {sections.map((section, i) => {
-          const isOpen = !folds.includes(section.name)
-          const fold = moving[`fold-${section.name}`]
-          // Folding or unfolding, the body is held to the rows it has reached:
-          // cut there, at its own height, for a box squeezed below its own
-          // height draws its border over the rows above.
-          foldRows.set(`fold-${section.name}`, section.rows)
-          const clip = fold && Math.round(section.rows * fold.at)
-          return (
-            <Box key={`section-${section.name}`} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
-              {header(section, isOpen)}
-              {clip === undefined ? (
-                isOpen && section.body()
-              ) : (
-                <Box flexDirection="column" height={clip} overflow="hidden">
-                  <Box flexDirection="column" flexShrink={0}>
-                    {section.body(clip)}
+      <Box width={columns} minHeight={bodyRows} overflow="hidden" flexShrink={0}>
+        <Box key="slide" flexDirection="column" paddingX={1} marginLeft={offset} width={columns} flexShrink={0}>
+          {sections.map((section, i) => {
+            const isOpen = !folds.includes(section.name)
+            const fold = moving[`fold-${section.name}`]
+            // Folding or unfolding, the body is held to the rows it has reached:
+            // cut there, at its own height, for a box squeezed below its own
+            // height draws its border over the rows above.
+            foldRows.set(`fold-${section.name}`, section.rows)
+            const clip = fold && Math.round(section.rows * fold.at)
+            return (
+              <Box key={`section-${section.name}`} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
+                {header(section, isOpen)}
+                {clip === undefined ? (
+                  isOpen && section.body()
+                ) : (
+                  <Box flexDirection="column" height={clip} overflow="hidden">
+                    <Box flexDirection="column" flexShrink={0}>
+                      {section.body(clip)}
+                    </Box>
                   </Box>
-                </Box>
-              )}
+                )}
+              </Box>
+            )
+          })}
+          {/* Claude Code's version, and its changelog a click away. */}
+          {m?.version && (
+            <Box marginTop={1} justifyContent="space-between">
+              <Text dimColor>{`Claude Code v${m.version}`}</Text>
+              <Button plain key="version" onPress={() => void openUrl($, CHANGELOG)}>
+                <Text color="gray">changelog ›</Text>
+              </Button>
             </Box>
-          )
-        })}
-        {/* Claude Code's version, and its changelog a click away. */}
-        {m?.version && (
-          <Box marginTop={1} justifyContent="space-between">
-            <Text dimColor>{`Claude Code v${m.version}`}</Text>
-            <Button plain key="version" onPress={() => void openUrl($, CHANGELOG)}>
-              <Text color="gray">changelog ›</Text>
-            </Button>
+          )}
+        </Box>
+        {offset > 0 && offset < columns && (
+          <Box key="curtain" position="absolute" top={top} left={offset}>
+            <Text dimColor>{Array.from({ length: bodyRows }, () => '│').join('\n')}</Text>
           </Box>
         )}
       </Box>
@@ -932,7 +958,8 @@ export const register: Register = (on, options) => {
 
 // --- spans: render.rs's ANSI strings as data, so the box can be measured -----
 
-// `i` draws it inverse; `v` is a picker pill's choice; `w` is wire.tsx's.
+// `i` draws it inverse; `v` is a picker pill's choice, or the effort chip's
+// level; `w` is wire.tsx's.
 type Span = {
   t: string
   c?: string
@@ -953,11 +980,11 @@ type Row = { section: number; label: string; content: Span[]; isTight?: boolean 
 // `body`, given the `clip` rows it is held to while it folds.
 type Section = { name: string; summary: string; tint?: string; rows: number; body: (clip?: number) => JSX.Element }
 
-// A card held to its share of `clip`, the gap above it one row of that: its
-// contents, kept at their own height (flexShrink 0) and cut, roll up inside
-// its border like a drawer's, the border going last. It is never less than
-// its border, which the section's own hold then cuts.
-const held = (clip?: number) => (clip === undefined ? {} : { height: Math.max(2, clip - 1), overflow: 'hidden' as const })
+// A card held to `clip`, straight under its section's header: its contents,
+// kept at their own height (flexShrink 0) and cut, roll up inside its border
+// like a drawer's, the border going last. It is never less than its border,
+// which the section's own hold then cuts.
+const held = (clip?: number) => (clip === undefined ? {} : { height: Math.max(2, clip), overflow: 'hidden' as const })
 
 const s = (t: string, c?: string): Span => ({ t, c })
 const dim = (t: string): Span => ({ t, d: true })
@@ -983,8 +1010,8 @@ function countProps(span: Span & { n: Count }) {
 }
 const SEP = s(' · ', 'gray')
 
-function join(parts: Span[][]): Span[] {
-  return parts.filter(part => part.length > 0).flatMap((part, i) => (i === 0 ? part : [SEP, ...part]))
+function join(parts: Span[][], sep: Span = SEP): Span[] {
+  return parts.filter(part => part.length > 0).flatMap((part, i) => (i === 0 ? part : [sep, ...part]))
 }
 
 // shortcut: one cell per code point, which every glyph drawn here is; a wide
@@ -1053,7 +1080,7 @@ function pickRows(
   const lines: Span[][] = [[]]
   for (const option of open.options) {
     const label = isEffort ? option : modelLabel(option, model)
-    const tint = isEffort ? effortColor(option) : 'magenta'
+    const tint = isEffort ? effortColor(option) : modelColor(option)
     // An effort pill's first two cells are its glyph's.
     const pill: Span = {
       t: isEffort ? ` · ${label} ` : ` ${label} `,
@@ -1088,7 +1115,7 @@ function pickRows(
   const to = target ? widthOf(first.slice(0, k)) + lead + Math.floor((widthOf([target]) - lead - 1) / 2) : -1
   const wire = (isArrow: boolean): Span => ({
     t: ' '.repeat(room),
-    c: isEffort ? effortColor(current ?? '') : 'magenta',
+    c: isEffort ? effortColor(current ?? '') : modelColor(current ?? ''),
     el: 'wire',
     w: { from, to, isArrow },
   })
@@ -1146,7 +1173,7 @@ function pathRow(p: Place | null): Span[] {
   const git = p?.git
   const path: Span[] = [{ ...s(formatCwd(p?.cwd ?? '', p?.home ?? null), 'cyan'), el: p?.remote ? 'repo' : undefined }]
   // A press opens the panel, or closes it while it is open.
-  const panel: Span[] = [{ ...dim(`sidebar ${SIDEBAR_TURN[0]}`), el: 'panel' }]
+  const panel: Span[] = [{ ...dim(`SIDEBAR ${SIDEBAR_TURN[0]}`), el: 'panel' }]
   if (!git) return join([path, panel])
   const isDirty = git.insertions > 0 || git.deletions > 0 || git.untracked > 0
   const counts = [
@@ -1180,6 +1207,12 @@ async function toggleFold($: $, name: string): Promise<void> {
 // tall body goes quicker, so no fold takes longer than MOST_MS.
 const ROW_MS = 24
 const MOST_MS = 320
+// The panel's contents slide in from its right edge as it opens, quick off
+// the mark and slow into place, and out as it closes, that played backwards.
+// Claude Code places the dock and its edge in one step (a width the person
+// keeps beats one asked for, and it is never under 24 columns), so an edge
+// of the panel's own rides the contents' left side as they slide (curtain).
+const SLIDE_MS = 240
 // Each fold's rows, by its motion's key, as its last drawing counted them.
 const foldRows = new Map<string, number>()
 
@@ -1194,17 +1227,32 @@ async function move($: $, key: string, to: 0 | 1): Promise<void> {
 // rolled shut leaves the box. With nothing left moving, the ticker stops.
 async function stepFolds($: $): Promise<void> {
   const shut: string[] = []
-  const left = await update($, motion, moving => {
+  let left = await update($, motion, moving => {
     const next: Record<string, Motion> = {}
     for (const [key, { at, to }] of Object.entries(moving)) {
-      const step = Math.max(1 / (foldRows.get(key) ?? 8), ROW_MS / MOST_MS)
-      const reached = to === 1 ? Math.min(1, at + step) : Math.max(0, at - step)
+      const step = key === 'panel' ? ROW_MS / SLIDE_MS : Math.max(1 / (foldRows.get(key) ?? 8), ROW_MS / MOST_MS)
+      // A hair off its end is there: ten tenths add up short of one, which
+      // would take a beat more.
+      const stepped = to === 1 ? Math.min(1, at + step) : Math.max(0, at - step)
+      const reached = Math.abs(stepped - to) < 1e-9 ? to : stepped
       if (reached !== to) next[key] = { at: reached, to }
-      else if (to === 0) shut.push(key)
+      else if (to === 0) {
+        shut.push(key)
+        // Slid out, the panel stays drawn so until it has closed, below:
+        // dropped first, it would draw its contents back in place.
+        if (key === 'panel') next[key] = { at: 0, to }
+      }
     }
     return next
   })
   if (shut.includes('menu')) await update($, menu, x => (x?.isClosing ? null : x))
+  // Slid out, the panel closes, the person maybe having closed it already,
+  // and only then lets its motion go.
+  if (shut.includes('panel')) {
+    await $.ui.close({ id: PANE }).catch(() => undefined)
+    left = await update($, motion, ({ panel, ...rest }) => (panel?.to === 0 ? rest : { ...rest, ...(panel && { panel }) }))
+    $.ui.invalidate('ui.render')
+  }
   if (Object.keys(left).length === 0) {
     ticker?.cancel()
     ticker = null
@@ -1289,20 +1337,34 @@ function aliasOf(model: string | undefined): string | undefined {
 }
 
 // The box's control: closes the panel when the engine holds it open, and
-// keeps it closed as the person's close would; opens it otherwise.
+// keeps it closed as the person's close would; opens it otherwise. Open, the
+// panel's contents slide out and then it closes (stepFolds); mid-slide out,
+// they slide back in.
 async function togglePanel($: $): Promise<void> {
-  if ((await $.ui.panes()).some(pane => pane.id === PANE)) {
+  const [panes, moving] = await Promise.all([$.ui.panes(), read($, motion)])
+  if (!panes.some(pane => pane.id === PANE)) await openPanel($)
+  else if (moving.panel?.to === 0) {
+    await update($, panelClosed, () => false)
+    await move($, 'panel', 1)
+  } else {
     await update($, panelClosed, () => true)
-    await $.ui.close({ id: PANE })
-  } else await openPanel($)
+    await move($, 'panel', 0)
+  }
   $.ui.invalidate('ui.render')
 }
 
-// Opens the panel with the keyboard; false where the surface cannot place it
-// (the main screen, or under 110 columns).
+// How far off to the right the panel's contents stand, as a share of its
+// width: one curve both ways, so a turn mid-slide takes up from where they
+// stand.
+const offPanel = ({ at }: Motion) => (1 - at) ** 3
+
+// Opens the panel with the keyboard, its contents sliding in; false where the
+// surface cannot place it (the main screen, or under 110 columns). The motion
+// first, so no frame draws them in place.
 async function openPanel($: $): Promise<boolean> {
   await update($, panelClosed, () => false)
-  return (await $.ui.open({ id: PANE, title: 'sidebar', focus: true, columns: PANE_COLUMNS })).isPlaced
+  await move($, 'panel', 1)
+  return (await $.ui.open({ id: PANE, title: 'SIDEBAR', focus: true, columns: PANE_COLUMNS })).isPlaced
 }
 
 function modelRow(r: Reading | null, m: { model: string; effort: string | null; version: string } | null, isWorking: boolean): Span[] {
@@ -1311,15 +1373,18 @@ function modelRow(r: Reading | null, m: { model: string; effort: string | null; 
   const color = r?.percent == null ? 'green' : pctColor(pct)
   const filled = Math.floor((BAR_WIDTH * Math.min(100, Math.max(0, Math.trunc(pct))) + 50) / 100)
   const used = r?.tokens ?? Math.floor(((r?.window ?? 0) * pct) / 100)
+  // Its parts stand apart on space alone: the chips' colours and chevrons
+  // already part them, and the dots between them read as clutter.
   return join([
     // Drawn by bar.tsx, which animates it; the text holds its width.
     [{ t: '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled), c: color, el: 'bar' }, s(' '), num('pct', pct, 'int', color, '', '%')],
     r && r.window > 0 ? [num('used', used, 'tokens', 'white'), s(`/${windowLabel(r.window)}`, 'gray')] : [],
-    [{ ...s(`${m?.model ? prettify(m.model) : 'unknown'} ${MENU_TURN[0]}`, 'magenta'), el: 'model' }],
-    m?.effort ? [{ ...s(`${m.effort} effort ${MENU_TURN[0]}`, effortColor(m.effort)), el: 'effort' }] : [],
-    // Drawn by claude.tsx: the spark's three-cell track and `working`, or `●  ready`.
-    [{ t: isWorking ? '    Working' : '●  ready', el: 'claude' }],
-  ])
+    // In the colour the model picker gives it.
+    [{ ...s(`${m?.model ? prettify(m.model) : 'unknown'} ${MENU_TURN[0]}`, m?.model ? modelColor(aliasOf(m.model) ?? '') : 'gray'), el: 'model' }],
+    m?.effort ? [{ ...s(`${m.effort} effort ${MENU_TURN[0]}`, effortColor(m.effort)), el: 'effort', v: m.effort }] : [],
+    // Drawn by claude.tsx: the spark and `Working`, or `✓ Ready`.
+    [{ t: isWorking ? WORKING : '✓ Ready', el: 'claude' }],
+  ], s('  '))
 }
 
 // The four buckets, each with the latest turn's share.
@@ -1568,6 +1633,8 @@ type Iteration = {
 let isAdvisorPending = false
 // The ticker that moves the folds, running only while one moves.
 let ticker: { cancel: () => void } | null = null
+// The session the box was last seeded for.
+let seededFor: string | null = null
 // Set while a session that started empty may still be handed its conversation.
 let isAwaitingConversation = false
 let seedTries = 0
@@ -1593,6 +1660,48 @@ function remember<V>(waiting: Map<string, V>, key: string, value: V): void {
   if (waiting.size > 100) waiting.delete(waiting.keys().next().value as string)
 }
 
+// A session's values from the engine and its transcript: the figures, the
+// model and effort, the place, the agents, the prices, the folded sections
+// and what the transcript holds. Run as the plugin starts and again as the
+// process goes on under another session.
+async function seedSession($: $): Promise<void> {
+  const [usage, model, version, settings, n, t, id] = await Promise.all([
+    $.session.usage(),
+    $.session.model(),
+    $.session.version(),
+    $.settings.read(),
+    $.session.turns(),
+    $.clock.now(),
+    $.session.id(),
+  ])
+  seededFor = id
+  const setEffort = (settings as Record<string, unknown>).effortLevel
+  // A reload keeps what turn.step learned: the resolved id beats /model's label.
+  await update($, meta, m => ({
+    model: m?.model ?? model,
+    effort: m?.effort ?? (typeof setEffort === 'string' ? setEffort : null),
+    sessionEffort: m?.sessionEffort ?? null,
+    version: version.base ?? version.version,
+    startedAt: usage.startedAt,
+  }))
+  await update($, reading, () => toReading(usage))
+  // A reload cancels the timers: nothing is left half open.
+  await update($, menu, () => null)
+  await update($, motion, () => ({}))
+  await update($, turns, () => n)
+  await update($, now, () => t)
+  await refreshPlace($)
+  await refreshAgents($)
+  await readPrices($)
+  const kept = await $.store.get('folded').catch(() => undefined)
+  if (Array.isArray(kept)) await update($, folded, () => kept.filter((x): x is string => typeof x === 'string'))
+  // A session the background daemon runs (the agent view's, or a spare it
+  // hands one later) starts the plugin before its conversation arrives, the
+  // transcript written ~2 s on: then the clock waits for it, and seeds once.
+  seedTries = 0
+  isAwaitingConversation = !(await seed($)) && n === 0
+}
+
 // What the transcript says of the session it now holds: its tokens, prompts,
 // advisor and cache, and the effort of its last request where none is known
 // (settings may name none). False where there is no transcript to read.
@@ -1606,6 +1715,15 @@ async function seed($: $): Promise<boolean> {
   if (scan.cache) await update($, cache, () => scan.cache)
   if (scan.effort) await update($, meta, m => m && { ...m, effort: m.effort ?? scan.effort })
   return true
+}
+
+// The advisor's card from the transcript. A read that lands after a later
+// one has started is dropped, so an older picture never replaces a newer.
+let advisorReads = 0
+async function refreshAdvisor($: $): Promise<void> {
+  const n = ++advisorReads
+  const scan = await readTranscript($)
+  if (scan && n === advisorReads) await update($, advisor, () => scan.advisor)
 }
 
 // The transcript's size, for the SESSION card: looked at as the session seeds
@@ -1925,6 +2043,22 @@ function pctColor(pct: number): string {
 function effortColor(level: string): string {
   const colors: Record<string, string> = { low: 'gray', high: 'cyan', xhigh: 'yellow', max: 'red' }
   return colors[level.toLowerCase()] ?? 'white'
+}
+
+// The hex an effort colour's glow washes toward white, its theme colour being
+// a name: VS Code's own dark theme's, near most terminals'.
+function effortShine(level: string): string {
+  const hexes: Record<string, string> = { gray: '#666666', cyan: '#11a8cd', yellow: '#e5e510', red: '#cd3131' }
+  return hexes[effortColor(level)] ?? '#e5e5e5'
+}
+
+// A model's colour in the picker, by its family (`opus[1m]` is Opus's): hex,
+// for pill.tsx's sweep to wash toward white, and none an effort level takes.
+// The default and anything newer are a pale slate.
+function modelColor(alias: string): string {
+  const colors: Record<string, string> = { opus: '#d77757', sonnet: '#5f9cf5', haiku: '#5fbf8f', fable: '#b48cf2' }
+  const family = /^(opus|sonnet|haiku|fable)/.exec(alias.toLowerCase())?.[1]
+  return (family && colors[family]) || '#a9afc2'
 }
 
 // `claude-opus-5-5[1m]` -> `Opus 5.5`; `Opus 5.5 (1M context)` -> `Opus 5.5`.

@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 // The engine's own answers, which the kit leaves to the test.
 // `opened` collects each pane open's `focus`; the store it keeps is returned.
-const engine = (on: On, opened?: (true | undefined)[], turns = () => 3) => {
+const engine = (on: On, opened?: (true | undefined)[], turns = () => 3, onClose?: () => Promise<void>) => {
   const kept = new Map<string, unknown>()
   on('store.get', ($, e) => ({ value: kept.get(e.key) }))
   on('store.set', ($, e) => (kept.set(e.key, e.value), { value: undefined }))
@@ -17,9 +17,9 @@ const engine = (on: On, opened?: (true | undefined)[], turns = () => 3) => {
   // The engine's record of the open panes.
   const panes = new Set<string>()
   on('ui.open', ($, e) => (opened?.push(e.focus), panes.add(e.id), { value: { isPlaced: true as const } }))
-  on('ui.close', ($, e) => (panes.delete(e.id), { value: undefined }))
+  on('ui.close', async ($, e) => (await onClose?.(), panes.delete(e.id), { value: undefined }))
   on('ui.panes', () => ({ value: [...panes].map(id => ({ id, title: id, isShown: true, isFocused: false, isPlaced: true })) }))
-  for (const event of ['PermissionRequest', 'Stop', 'PreCompact', 'PostCompact', 'PostModelSwitch'] as const) on(`classic.${event}`, () => ({}))
+  for (const event of ['PermissionRequest', 'Stop', 'PreCompact', 'PostCompact', 'PostModelSwitch', 'SessionStart'] as const) on(`classic.${event}`, () => ({}))
   return kept
 }
 
@@ -71,7 +71,7 @@ const BAND = {
 }
 
 const PANE = {
-  title: 'sidebar',
+  title: 'SIDEBAR',
   isFocused: false,
   bodyColumns: 40,
   placement: 'dock' as const,
@@ -313,11 +313,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
     const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
 
-    for (const text of ['~/repo', 'main', '↑2', '+5', '-1', '~1', 'Opus 5.5', '┏━', '┣━', '┼']) {
+    for (const text of ['~/repo', 'main', '↑2', '+5', '-1', '~1', '┏━', '┣━', '┼']) {
       expect((await ui.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     }
+    // The model in the colour its picker gives it.
+    expect((await ui.find({ type: 'Text', text: 'Opus 5.5', in: 'chip-model' }))?.props.color).toBe('#d77757')
     expect(await ui.find({ key: 'n-messages' })).toBeUndefined()
-    expect((await ui.find({ key: 'effort' }))?.text).toBe('xhigh effort')
+    expect((await ui.find({ key: 'effort', in: 'chip-effort' }))?.text).toBe('xhigh effort')
 
     // Every line of the frame is the same number of cells, controls included,
     // so a ragged right edge on screen is the terminal's drawing, not the mod's.
@@ -384,7 +386,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     // The effort chip opens its picker inside the frame, the level in force
     // inverted; a pick, confirmed, shuts it. Its chevron opens and shuts it too.
-    const chip = async () => (await ui.find({ key: 'effort' }))?.text
+    const chip = async () => (await ui.find({ key: 'effort', in: 'chip-effort' }))?.text
     const isOffered = async (key: string) => (await ui.find({ key })) !== undefined
     // A choice in force is lit: its pill inverted.
     const isLit = async (key: string) => (await ui.find({ type: 'Text', in: key }))?.props.inverse === true
@@ -400,34 +402,53 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await clock.advance(48)
     expect([await isOffered('wire'), await isOffered('pick-effort-max')]).toEqual([true, false])
     // Then its row ripples in from the left on the terminal's clock: the last
-    // level is still to come. Settled, the level in force is lit as one pill,
-    // glyph and name in one colour.
+    // level is still to come.
     await clock.advance(952)
     expect([await isOffered('pick-effort-max'), (await pill('max'))?.text?.trim()]).toEqual([true, ''])
-    await ui.advance(1200)
-    expect([(await pill('xhigh'))?.props.inverse, (await pill('xhigh'))?.text, (await pill('low'))?.props.inverse]).toEqual([true, ' ✸ xhigh ', undefined])
-    // Under the pointer a level lights the same way and plays its flourish
-    // again: max flares through red, yellow and white, low keeps its gray.
-    // Looked at each 30 ms tick of pill.tsx.
-    const flare = async (level: string) => {
-      await ui.pointer({ type: 'enter', x: 0, y: 0, in: `pick-effort-${level}` })
-      const colors = new Set<string>()
-      for (let t = 0; t < 1200; t += 30) colors.add(await ui.advance(30).then(async () => (await pill(level))?.props.color as string))
-      const text = (await pill(level))?.text
-      await ui.pointer({ type: 'leave', x: 0, y: 0, in: `pick-effort-${level}` })
-      return { colors: [...colors].sort(), text }
+    // As it ripples in, each level plays its flourish: max flares through red,
+    // yellow and white, low keeps its gray. Looked at each 30 ms tick of
+    // pill.tsx, at the glyph that leads the pill.
+    const flared = { max: new Set<string>(), low: new Set<string>() }
+    for (let t = 0; t < 1200; t += 30) {
+      await ui.advance(30)
+      for (const level of ['max', 'low'] as const) {
+        const color = (await ui.findAll({ type: 'Text', in: `pick-effort-${level}` })).find(text => text.props.color)?.props.color
+        if (typeof color === 'string') flared[level].add(color)
+      }
     }
-    expect([await flare('max'), await flare('low')]).toEqual([
-      { colors: ['red', 'white', 'yellow'], text: ' ✹ max ' },
-      { colors: ['gray'], text: ' · low ' },
-    ])
+    expect([[...flared.max].sort(), [...flared.low]]).toEqual([['red', 'white', 'yellow'], ['gray']])
+    // Under the pointer it plays again: a layer over the pill, hidden until the
+    // hover group reveals it and a Button too, loops the flourish for as long
+    // as the row is open, resting between plays.
+    const layerOf = async (level: string) => (await ui.findAll({ type: 'Box', in: `pick-effort-${level}` })).find(box => box.props.position === 'absolute')
+    expect([(await layerOf('max'))?.props.display, (await ui.find({ key: 'pick-effort-max-lit', in: 'pick-effort-max' }))?.type]).toEqual(['none', 'Button'])
+    const looped = new Set<string>()
+    for (let t = 0; t < 1500; t += 30) looped.add(await ui.advance(30).then(async () => (await ui.findAll({ type: 'Text', in: 'pick-effort-max' })).at(-1)?.text ?? ''))
+    expect([...looped].sort()).toEqual([' ✸ max ', ' ✹ max ', ' ✺ max ', ' ❂ max '])
+    // Settled, the level in force is lit as one pill, glyph and name in one
+    // colour, and as the pick it plays its flourish on a loop; the rest are not.
+    const picked = new Set<string>()
+    for (let t = 0; t < 1500; t += 30) {
+      await ui.advance(30)
+      const lit = await pill('xhigh')
+      picked.add(lit?.props.inverse === true ? (lit.text ?? '') : 'not lit')
+    }
+    expect([[...picked].sort(), (await pill('low'))?.props.inverse]).toEqual([[' ✶ xhigh ', ' ✷ xhigh ', ' ✸ xhigh ', ' ✹ xhigh ', ' ✺ xhigh '], undefined])
     expect((await pill('max'))?.props.inverse).toBeUndefined()
+    // Already lit and playing, the pick has no layer to hand the pointer over
+    // to: the handover flickered.
+    expect(await ui.find({ key: 'pick-effort-xhigh-lit', in: 'pick-effort-xhigh' })).toBeUndefined()
     // A click on a pill picks its level, lit in place of the one in force,
     // with a confirm after the row, which has room for it where it stands;
     // nothing is applied yet.
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'pick-effort-max' })
+    await ui.press({ key: 'pick-effort-max' })
     const confirm = async () => (await ui.find({ key: 'confirm' }))?.text
     expect([await chip(), (await pill('max'))?.props.inverse, (await pill('xhigh'))?.props.inverse, await confirm()]).toEqual(['xhigh effort', true, undefined, ' ✓ Confirm '])
+    // Picked, it plays its flare from the start, 45 ms a frame from the tick
+    // that starts it over: looked at that tick, 60 ms on and 90.
+    const flare: string[] = []
+    for (const ms of [30, 60, 30]) flare.push(await ui.advance(ms).then(async () => `${(await pill('max'))?.text} ${(await pill('max'))?.props.color}`))
+    expect(flare).toEqual([' ✺ max  red', ' ✹ max  yellow', ' ❂ max  white'])
     // The confirm applies it, and the picker folds away: its row ripples out
     // from the right, then its rows roll shut and it leaves the box.
     await ui.press({ key: 'confirm' })
@@ -438,20 +459,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await isOffered('pick-effort-max')).toBe(false)
     await ui.press({ key: 'effort' })
     await unfold()
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'pick-effort-low' })
+    await ui.press({ key: 'pick-effort-low' })
     await ui.press({ key: 'confirm' })
     await unfold()
     expect(await chip()).toBe('low effort')
     expect(await isOffered('pick-effort-max')).toBe(false)
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'chevron-effort' })
+    await ui.press({ key: 'chevron-effort' })
     await unfold()
     expect(await isOffered('pick-effort-max')).toBe(true)
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'chevron-effort' })
+    await ui.press({ key: 'chevron-effort' })
     await unfold()
     expect(await isOffered('pick-effort-max')).toBe(false)
     // Opened again while it rolls shut, it rolls back down from where it stood:
     // its choices gone by then, the wire's row still there.
-    const chevron = () => ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'chevron-effort' })
+    const chevron = () => ui.press({ key: 'chevron-effort' })
     await chevron()
     await unfold()
     await chevron()
@@ -490,6 +511,21 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const pillText = async (key: string) => (await ui.find({ type: 'Text', in: key }))?.text
     const labels = await Promise.all(['opus', 'sonnet', 'fable', 'haiku'].map(alias => pillText(`pick-model-${alias}`)))
     expect(labels).toEqual([' Opus 5.5 ', ' Sonnet 6 ', ' Fable ', ' Haiku '])
+    // Each model in a colour of its own, none an effort level's; under the
+    // pointer a sweep of light runs across its name, washed from that colour
+    // toward white at three strengths, looping while the row is open.
+    const tints = await Promise.all(['opus', 'sonnet', 'fable', 'haiku', 'default'].map(async alias => (await ui.find({ type: 'Text', in: `pick-model-${alias}` }))?.props.color))
+    expect(tints).toEqual(['#d77757', '#5f9cf5', '#b48cf2', '#5fbf8f', '#a9afc2'])
+    // The light crosses the pill's padding either side of the name too, the
+    // bars a lit pill shows there: looked at on Haiku, whose name holds no
+    // space of its own.
+    const [swept, padded] = [new Set<unknown>(), new Set<unknown>()]
+    for (let t = 0; t < 1500; t += 30) {
+      await ui.advance(30)
+      for (const text of await ui.findAll({ type: 'Text', in: 'pick-model-sonnet' })) swept.add(text.props.color)
+      for (const text of await ui.findAll({ type: 'Text', in: 'pick-model-haiku' })) if (text.text === ' ' && text.props.color) padded.add(text.props.color)
+    }
+    expect([swept.size, swept.has('#5f9cf5'), padded.size]).toEqual([4, true, 4])
     expect(await Promise.all(['opus[1m]', 'opusplan', 'best'].map(alias => isOffered(`pick-model-${alias}`)))).toEqual([false, false, false])
     expect(await isLit('pick-model-opus')).toBe(true)
     expect(await widths()).toEqual(width)
@@ -514,7 +550,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const texts = unrolled.lines.map(textOf)
     const end = texts.findIndex((text, i) => i > wireRow + 2 && isBlank(text))
     expect([wireRow > 0, texts[end + 1]?.includes('┼')]).toEqual([true, true])
-    const fromChip = middle(unrolled.lines[wireRow - 1], 'model', (await label('model')) ?? '')
+    const fromChip = middle(unrolled.lines[wireRow - 1], 'chip-model', (await ui.find({ key: 'model', in: 'chip-model' }))?.text ?? '')
     const toPill = middle(unrolled.lines[wireRow + 2], 'pick-model-opus', ' Opus 5.5 ')
     // Opus lies left of the chip, so the wire turns down at ╭ and up at ╯.
     expect(toPill).toBeGreaterThan(0)
@@ -532,7 +568,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // A click on Sonnet picks it and sets nothing yet: the wire's end sets off
     // for it, a head pointing its way (Sonnet lies left of Opus) and its arrow
     // lifted, then turns down onto it.
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'pick-model-sonnet' })
+    await ui.press({ key: 'pick-model-sonnet' })
     await ui.advance(16)
     expect([sets, (await textIn('wire')).includes('◂'), await drawnIn('wire-arrow')]).toEqual([[], true, ''])
     // Its confirm shows two cells after the last choice, the row having room
@@ -544,17 +580,19 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.advance(1000)
     const toSonnet = middle(pills, 'pick-model-sonnet', ' Sonnet 6 ')
     expect((await wireAt()).corners).toEqual([fromChip, toSonnet, toSonnet])
-    // Opus, in force, clicked again takes the pick back, and the confirm goes.
-    // Sonnet again, and its confirm sets the Model row.
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'pick-model-opus' })
+    // Opus, in force, clicked again takes the pick back, and the confirm goes:
+    // clicked where the pointer rests, on the layer it revealed. Sonnet again,
+    // and its confirm sets the Model row.
+    await ui.press({ key: 'pick-model-opus-lit' })
     expect(await isOffered('confirm')).toBe(false)
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'pick-model-sonnet' })
+    await ui.press({ key: 'pick-model-sonnet' })
     await ui.press({ key: 'confirm' })
     expect(sets).toEqual([['model', 'sonnet']])
     await unfold()
     expect(await isOffered('pick-model-opus')).toBe(false)
     // On a 1M session the 1M aliases stand in, so a pick keeps the window.
-    await ui.press({ key: 'model' })
+    // The chip's chevron opens the picker as its words do.
+    await ui.press({ key: 'chevron-model' })
     await unfold()
     await ui.advance(1000)
     expect(await pillText('pick-model-sonnet[1m]')).toBe(' Sonnet 6 ')
@@ -569,7 +607,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect([(await textIn('wire')).join('').replace(/[▸◂]/, '╭'), await drawnIn('wire-arrow')]).toEqual([settled, ''])
     await ui.advance(1000)
     const glided = await wireAt()
-    const fromEffort = middle(glided.lines[glided.at - 1], 'effort', (await label('effort')) ?? '')
+    const fromEffort = middle(glided.lines[glided.at - 1], 'chip-effort', (await ui.find({ key: 'effort', in: 'chip-effort' }))?.text ?? '')
     const toHigh = cellsTo(glided.lines[glided.at + 2], 'pick-effort-high') + 3 + Math.floor('high'.length / 2)
     expect(glided.corners).toEqual([fromEffort, toHigh, toHigh])
 
@@ -605,15 +643,27 @@ for (const surface of ['terminal', 'desktop'] as const) {
     })
     await $.session.measure({ context: { tokens: 1, window: 200_000, percent: 1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 23 }], changed: ['rateLimits'] })
     const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
-    const fold = () => pane.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'fold-USAGE' })
+    const fold = () => pane.press({ key: 'fold-USAGE' })
     // The heights a folding body and its card are held to, outermost first;
-    // none while it rests.
+    // none while it rests. (The frame the panel slides in cuts at its width.)
     const heldTo = (node: unknown): number[] => {
       const el = node as { props?: { overflow?: string; height?: number }; children?: unknown[] }
       const inner = (el?.children ?? []).flatMap(heldTo)
-      return el?.props?.overflow === 'hidden' ? [el.props.height ?? -1, ...inner] : inner
+      return el?.props?.overflow === 'hidden' && el.props.height !== undefined ? [el.props.height, ...inner] : inner
     }
     expect([await pane.find({ key: 'n-usage-five_hour' }) !== undefined, heldTo(await pane.drawn())]).toEqual([true, []])
+    // The header's rule, in cells, and the ones it stands at over the next
+    // 25 ms ticks, each once. It sweeps out to the edge as the panel opens.
+    const rule = async () =>
+      [...((await pane.findAll({ type: 'Text', in: 'fold-USAGE' })).find(text => /^ [─ ]*$/.test(text.text ?? ''))?.text ?? '')].filter(cell => cell === '─').length
+    const ruled = async () => {
+      const seen = [await rule()]
+      for (let tick = 0; tick < 8; tick++) seen.push(await pane.advance(25).then(rule))
+      return seen.filter((cells, i) => cells !== seen[i - 1])
+    }
+    expect(await ruled()).toEqual([0, 3, 6, 9, 12, 15, 18, 21, 24])
+    await pane.advance(100)
+    expect(await rule()).toBe(30)
     // A click and its first beat, as drawn after each write: each must agree
     // with the fold, so it never flashes the other way.
     const clicked = async () => {
@@ -625,23 +675,27 @@ for (const surface of ['terminal', 'desktop'] as const) {
       return seen
     }
 
-    // The body folds a row a beat: whole until then, one beat in its five
-    // rows (the card's gap and border, the window's name and bar) are four,
-    // the card's border kept round the three left to it.
-    expect(await clicked()).toEqual(['5,4', '4,3'])
+    // The body folds a row a beat: whole until then, one beat in its four
+    // rows (the card's border, straight under the header, and the window's
+    // name and bar) are three, the card's border kept round them.
+    expect(await clicked()).toEqual(['4,4', '3,3'])
     await clock.advance(300)
     expect([await pane.find({ key: 'n-usage-five_hour' }), heldTo(await pane.drawn())]).toEqual([undefined, []])
-    // The rule sweeps out, the summary waiting at its end.
-    await pane.advance(500)
+    // The rule draws back just far enough for the summary, never back to the
+    // name and out again, and the summary then shows at its end.
+    expect(await pane.find({ type: 'Text', text: ' 5-hour 23%', in: 'fold-USAGE' })).toBeUndefined()
+    expect(await ruled()).toEqual([30, 27, 24, 21, 19])
     expect(await pane.find({ type: 'Text', text: ' 5-hour 23%', in: 'fold-USAGE' })).toBeDefined()
     expect(kept.get('folded')).toEqual(['USAGE'])
 
     // It unfolds the same way, from nothing, and rests at its own height: a
-    // beat in only its gap shows, the card, never less than its border, cut
-    // below it.
+    // beat in only its top border shows, the card, never less than its
+    // border, cut below it.
     expect(await clicked()).toEqual(['0,2', '1,2'])
     await clock.advance(300)
     expect([await pane.find({ key: 'n-usage-five_hour' }) !== undefined, heldTo(await pane.drawn())]).toEqual([true, []])
+    // The summary goes, and the rule runs on from where it stood to the edge.
+    expect(await ruled()).toEqual([19, 22, 25, 28, 30])
     expect(kept.get('folded')).toEqual([])
   })
 
@@ -711,19 +765,21 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const first = await spark()
     await working.advance(240)
     expect(await spark()).not.toBe(first)
-    // Frame after frame the spark keeps the middle of its three cells.
+    // Frame after frame the spark keeps its one cell, a single space before
+    // the word, as the row's separators space their parts.
     for (let i = 0; i < 8; i++) {
       await working.advance(120)
       const cells = [...((await working.find({ type: 'Text', in: 'claude' }))?.text ?? '')]
-      expect(['·', '✢', '✶', '✻', '✽'].includes(cells[1] ?? '') ? 'middle' : cells.join('')).toBe('middle')
+      const isSpaced = cells[1] === ' ' && cells.slice(2).join('') === 'Working' && ['·', '✢', '✶', '✻', '✽'].includes(cells[0] ?? '')
+      expect(isSpaced ? 'spark, space, word' : cells.join('')).toBe('spark, space, word')
     }
     // A glow sweeps the spark and on over `Working`, Claude's accent washed
-    // toward white, a cell a 60 ms tick. Over one sweep (its eleven cells and
+    // toward white, a cell a 60 ms tick. Over one sweep (its nine cells and
     // eight more) the first letter brightens to the glow's middle and fades
     // back, and the glow's middle passes the spark and every letter.
     const lit = new Set<string>()
     const brightest: string[] = []
-    for (let i = 0; i < 19; i++) {
+    for (let i = 0; i < 17; i++) {
       await working.advance(60)
       lit.add((await working.find({ type: 'Text', text: /^W$/, in: 'claude' }))?.props.color as string)
       for (const cell of await working.findAll({ type: 'Text', in: 'claude' })) if (cell.props.color === '#f5ddd5') brightest.push(cell.text ?? '')
@@ -733,7 +789,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect([letters.sort().join(''), brightest.some(text => ['·', '✢', '✶', '✻', '✽'].includes(text))]).toEqual([[...'Working'].sort().join(''), true])
 
     const idle = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
-    expect(await has(idle, 'ready', 'claude')).toBe('ready')
+    // At rest, `✓ Ready` in green, as a finished agent's `✓ done`.
+    const colorOf = async (text: RegExp) => (await idle.find({ type: 'Text', text, in: 'claude' }))?.props.color
+    expect([await has(idle, 'Ready', 'claude'), await colorOf(/^✓$/), await colorOf(/^Ready$/)]).toEqual(['Ready', 'green', 'green'])
   })
 
   test(`${surface}: an agent in the panel carries its tokens, working time and engine-priced cost`, async ($, on) => {
@@ -832,32 +890,76 @@ for (const surface of ['terminal', 'desktop'] as const) {
   // closed panel shut across reloads goes untested here.
   test(`${surface}: the box's sidebar control opens and closes the panel, its chevron turning`, async ($, on) => {
     const opened: (true | undefined)[] = []
-    engine(on, opened)
+    // Where the panel's contents stood each time it closed.
+    const atClose: unknown[] = []
+    engine(on, opened, undefined, async () => void atClose.push(await offset()))
+    const clock = mock.clock(on)
     mock.env(on, { HOME: '/home/me' })
     on('session.root', () => ({ value: '/home/me/repo' }))
     on('session.id', () => ({ value: 's1' }))
 
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    // How far right of its place the panel's contents stand, and where the
+    // panel's own edge stands, there while they slide but in place.
+    const offset = async () => (await pane.find({ key: 'slide' }))?.props.marginLeft
+    const curtain = async () => (await pane.find({ key: 'curtain' }))?.props.left
+    const edged = async () => [await offset(), await curtain()]
     const chevron = async () => (await ui.find({ type: 'Text', in: 'chevron-panel' }))?.text
-    expect((await ui.find({ key: 'panel' }))?.text).toBe('sidebar')
+    expect((await ui.find({ key: 'panel' }))?.text).toBe('SIDEBAR')
     expect(await chevron()).toBe(' ›')
 
-    // The keyboard opens it; the chevron turns through to face the panel's way.
+    // The keyboard opens it; the chevron turns through to face the panel's way,
+    // eased: slow off the mark and into place, quick through the middle.
     await ui.press({ key: 'panel' })
     expect(opened).toEqual([true])
-    await ui.advance(60)
-    expect(await chevron()).toBe(' >')
-    await ui.advance(500)
-    expect(await chevron()).toBe(' ‹')
+    const turn: string[] = []
+    for (const ms of [120, 30, 90, 90, 150]) turn.push(await ui.advance(ms).then(chevron).then(text => text ?? ''))
+    expect(turn).toEqual([' ›', ' >', ' |', ' <', ' ‹'])
+    // Its contents slide in from its right edge over 240 ms, a 24 ms beat at
+    // a time, quick off the mark and slow into place, an edge like the dock's
+    // riding their left margin until it meets the dock's own.
+    const slid: unknown[] = [await offset()]
+    const sweep: unknown[][] = [await edged()]
+    for (let beat = 0; beat < 10; beat++) {
+      await clock.advance(24)
+      slid.push(await offset())
+      sweep.push(await edged())
+    }
+    expect(slid).toEqual([40, 29, 20, 14, 9, 5, 3, 1, 0, 0, 0])
+    expect(sweep).toEqual(slid.map(at => [at, typeof at === 'number' && at > 0 && at < 40 ? at : undefined]))
+    // It runs the panel's height in view, floor to ceiling, as the dock's does.
+    await ui.press({ key: 'panel' })
+    await clock.advance(144)
+    expect((await pane.find({ key: 'curtain' }))?.text?.split('\n')).toEqual(Array.from({ length: PANE.scroll.bodyRows }, () => '│'))
+    await ui.press({ key: 'panel' })
+    await clock.advance(240)
 
-    // Again closes it, and it turns back.
+    // Again: the chevron turns back at once, and the contents go out as they
+    // came in, played backwards, the panel's edge peeling off the dock's and
+    // riding out with them. The panel closes while they are still drawn out
+    // of sight, never back in place.
     await ui.press({ key: 'panel' })
     await ui.advance(500)
     expect(await chevron()).toBe(' ›')
+    const out: unknown[][] = []
+    for (let beat = 0; beat < 9; beat++) out.push(await clock.advance(24).then(edged))
+    expect([out, atClose]).toEqual([[...sweep].reverse().slice(1, -1), []])
+    await clock.advance(24)
+    expect(atClose).toEqual([slid[0]])
 
-    // A click on the chevron itself opens it once more.
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'chevron-panel' })
+    // A click on the chevron itself opens it once more, the panel having
+    // closed. Turned mid-slide out, the contents come back in from where they
+    // stand, never jumping, and it stays open.
+    await ui.press({ key: 'chevron-panel' })
     expect(opened).toEqual([true, true])
+    await clock.advance(240)
+    await ui.press({ key: 'panel' })
+    await clock.advance(144)
+    const turned: unknown[] = [await offset()]
+    await ui.press({ key: 'panel' })
+    for (let beat = 0; beat < 6; beat++) turned.push(await clock.advance(24).then(offset))
+    expect([opened, turned, atClose, await curtain()]).toEqual([[true, true], [9, 5, 3, 1, 0, 0, 0], [40], undefined])
   })
 
   test(`${surface}: a pick on a row too full for its confirm slides the row left to make room`, async ($, on) => {
@@ -876,15 +978,18 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const lines = async () => ((await frameOf(ui)) as { children: unknown[] }).children.filter(Boolean)
     const widths = async () => new Set((await lines()).map(cells))
     const width = await widths()
+    // The picker rolls open, and its choices ripple in on the terminal's
+    // clock: a choice is a Button once it is drawn.
     await ui.press({ key: 'model' })
     await clock.advance(1000)
+    await ui.advance(1000)
     const row = async () => (await lines()).find(line => cellsTo(line, 'pick-model-default') >= 0)
     const unmoved = cellsTo(await row(), 'pick-model-default')
 
     // A pick: no room for its confirm where the row stands, so the row slides
     // left a cell a beat on the hooks' clock, and the confirm shows once it
     // has made room, two cells after the last choice, the frame as wide as ever.
-    await ui.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'pick-model-sonnet' })
+    await ui.press({ key: 'pick-model-sonnet' })
     expect(await ui.find({ key: 'confirm' })).toBeUndefined()
     await clock.advance(24)
     expect(cellsTo(await row(), 'pick-model-default')).toBe(unmoved - 1)
@@ -937,12 +1042,164 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
     const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
-    expect([await figure('out'), await ui.find({ key: 'effort' })]).toEqual(['0', undefined])
+    // No effort yet, so no chip for it.
+    expect([await figure('out'), await ui.find({ key: 'effort', in: 'chip-effort' }).catch(() => undefined)]).toEqual(['0', undefined])
 
     isLoaded = true
     await clock.advance(1000)
     await ui.advance(3000)
-    expect([await figure('out'), await figure('cacheRead'), (await ui.find({ key: 'effort' }))?.text]).toEqual(['20', '300', 'high effort'])
+    expect([await figure('out'), await figure('cacheRead'), (await ui.find({ key: 'effort', in: 'chip-effort' }))?.text]).toEqual(['20', '300', 'high effort'])
+  })
+
+  test(`${surface}: a session the process goes on under, resumed or cleared, is seeded again`, async ($, on) => {
+    // /resume and /clear go on in the same process under another session: the
+    // engine drops every value the plugin keeps as the last one ends and raises
+    // no session.start for the next, only the classic SessionStart.
+    engine(on, undefined, () => 2)
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/home/me' })
+    let id = 'abc'
+    on('session.model', () => ({ value: 'claude-opus-5-5' }))
+    on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+    on('session.cwd', () => ({ value: '/home/me/repo' }))
+    on('session.repo', () => ({ value: null }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('session.root', () => ({ value: '/home/me/repo' }))
+    on('session.id', () => ({ value: id }))
+    on('settings.read', () => ({ value: {} }))
+    on('agent.list', () => ({ value: [] }))
+    const usage = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 300, cache_creation_input_tokens: 40 }
+    const transcript = [
+      JSON.stringify({ type: 'user', message: { content: 'hi' } }),
+      JSON.stringify({ type: 'assistant', effort: 'high', message: { id: 'm1', model: 'claude-opus-5-5', usage } }),
+    ].join('\n')
+    const isTranscript = (path: string) => path.replace(/\\/g, '/').endsWith(`/home/me/.claude/projects/-home-me-repo/${id}.jsonl`)
+    let reads = 0
+    on('fs.exists', ($, e) => ({ value: isTranscript(e.path) }))
+    on('fs.list', () => ({ value: [] }))
+    on('fs.stat', ($, e) => ({ value: { kind: 'file', size: isTranscript(e.path) ? transcript.length : 0, mtimeMs: 0, isLink: false } }))
+    on('fs.read', ($, e) => (isTranscript(e.path) && reads++, { value: isTranscript(e.path) ? transcript : '' }))
+    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
+    const shown = async () => [
+      (await ui.find({ key: 'model', in: 'chip-model' }))?.text,
+      (await ui.find({ key: 'effort', in: 'chip-effort' }).catch(() => undefined))?.text,
+      await figure('out'),
+    ]
+    expect(await shown()).toEqual(['unknown', undefined, '0'])
+
+    // Resumed: the model, its effort and the transcript's figures come back.
+    await $.classic.SessionStart({ source: 'resume', session_id: id })
+    await clock.advance(0)
+    await ui.advance(3000)
+    expect([await shown(), reads]).toEqual([['Opus 5.5', 'high effort', '20'], 1])
+    // A SessionStart for the session already seeded (`claude --resume` as the
+    // process starts) and a compaction read nothing again; a /clear does.
+    await $.classic.SessionStart({ source: 'resume', session_id: id })
+    await $.classic.SessionStart({ source: 'compact', session_id: id })
+    await clock.advance(0)
+    expect(reads).toBe(1)
+    id = 'def'
+    await $.classic.SessionStart({ source: 'clear', session_id: id })
+    await clock.advance(0)
+    expect(reads).toBe(2)
+  })
+
+  test(`${surface}: while Claude works the model's and the effort's chips glisten in their picker colours`, async ($, on) => {
+    engine(on)
+    mock.clock(on)
+    mock.env(on, { HOME: '/home/me' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.model', () => ({ value: 'claude-sonnet-6' }))
+    on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+    on('session.cwd', () => ({ value: '/home/me/repo' }))
+    on('session.repo', () => ({ value: null }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('session.root', () => ({ value: '/home/me/repo' }))
+    on('session.id', () => ({ value: 'abc' }))
+    on('settings.read', () => ({ value: { effortLevel: 'xhigh' } }))
+    on('agent.list', () => ({ value: [] }))
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }))
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    // The colours a chip's cells take over a sweep and more, a 60 ms tick at
+    // a time: all of them, and how many its chevron's; and whether any was
+    // bold.
+    const colours = async (isWorking: boolean, chip = 'chip-model') => {
+      const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, isWorking } })
+      const [seen, turned] = [new Set<unknown>(), new Set<unknown>()]
+      let isBold = false
+      for (let t = 0; t < 1200; t += 60) {
+        await ui.advance(60)
+        for (const text of await ui.findAll({ type: 'Text', in: chip })) {
+          if (text.props.color) seen.add(text.props.color)
+          if (text.props.color && text.text?.trim() === '▾') turned.add(text.props.color)
+          isBold ||= text.props.bold === true
+        }
+      }
+      await ui.unmount()
+      return { all: [...seen], chevron: turned.size, isBold }
+    }
+    // At rest, Sonnet's blue alone; at work, a glow washes it toward white,
+    // and on over its chevron. In colour alone: a bold letter grows heavier
+    // inverted, under the pointer.
+    expect(await colours(false)).toEqual({ all: ['#5f9cf5'], chevron: 1, isBold: false })
+    const working = await colours(true)
+    expect([working.all.length, working.all.includes('#5f9cf5'), working.chevron, working.isBold]).toEqual([5, true, 5, false])
+    // The effort's chip glistens alike: at rest its theme's yellow, at work a
+    // glow washing VS Code's own yellow toward white.
+    expect(await colours(false, 'chip-effort')).toEqual({ all: ['yellow'], chevron: 1, isBold: false })
+    const effort = await colours(true, 'chip-effort')
+    expect([effort.all.length, effort.all.includes('yellow'), effort.all.includes('#f2f288'), effort.chevron, effort.isBold]).toEqual([5, true, true, 5, false])
+  })
+
+  test(`${surface}: the advisor's card takes a call as soon as the response that made it is whole`, async ($, on) => {
+    engine(on)
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/home/me' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.model', () => ({ value: 'claude-opus-5-5' }))
+    on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+    on('session.cwd', () => ({ value: '/home/me/repo' }))
+    on('session.repo', () => ({ value: null }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('session.root', () => ({ value: '/home/me/repo' }))
+    on('session.id', () => ({ value: 'abc' }))
+    on('settings.read', () => ({ value: {} }))
+    on('agent.list', () => ({ value: [] }))
+    // The transcript gains the response that consulted the advisor.
+    let isAdvised = false
+    const advice = { type: 'advisor_message', model: 'claude-fable-5-1', input_tokens: 1000, output_tokens: 100 }
+    const transcript = () =>
+      [
+        JSON.stringify({ type: 'user', message: { content: 'hi' } }),
+        ...(isAdvised ? [JSON.stringify({ type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: { input_tokens: 10, output_tokens: 20, iterations: [{ type: 'message' }, advice] } } })] : []),
+      ].join('\n')
+    const isTranscript = (path: string) => path.replace(/\\/g, '/').endsWith('/home/me/.claude/projects/-home-me-repo/abc.jsonl')
+    on('fs.exists', ($, e) => ({ value: isTranscript(e.path) }))
+    on('fs.list', () => ({ value: [] }))
+    on('fs.stat', ($, e) => ({ value: { kind: 'file', size: isTranscript(e.path) ? transcript().length : 0, mtimeMs: 0, isLink: false } }))
+    on('fs.read', ($, e) => ({ value: isTranscript(e.path) ? transcript() : '' }))
+    on('turn.step', async function* ($, e) {
+      const serverToolUses = [{ id: 'adv1', name: 'advisor', input: {}, startedAt: 0, endedAt: 1 }]
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], serverToolUses, stopReason: 'end_turn' as const, usage: null }
+    })
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const card = async () => (await pane.find({ type: 'Text', text: '✶ Fable 5.1' })) !== undefined
+    expect(await card()).toBe(false)
+
+    // The response that consulted it is whole; the turn has not ended.
+    isAdvised = true
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 })) {
+      // only the result counts
+    }
+    await clock.advance(0)
+    expect(await card()).toBe(true)
   })
 
   test(`${surface}: the panel opens by itself in fullscreen only`, async ($, on) => {

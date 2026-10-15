@@ -54,8 +54,8 @@ A band above the prompt, redrawn as things happen rather than on a timer. Its fi
 
 | Row | Contents |
 |-----|----------|
-| **repo** | Directory (shortened to `~`), branch, `↑ahead` `↓behind`, `+insertions` `-deletions` `~untracked`, `⊟ stashes`, and `sidebar ›` to open or close the side panel (its chevron turns to match). Labelled **project** outside a git repo. Click the path to open the repository's web page. |
-| **model** | Context bar with %, `used/window` tokens, model `▾`, reasoning effort `▾`, and `● ready` or Claude's working animation. |
+| **repo** | Directory (shortened to `~`), branch, `↑ahead` `↓behind`, `+insertions` `-deletions` `~untracked`, `⊟ stashes`, and `SIDEBAR ›` to open or close the side panel (its contents slide in and out behind an edge that sweeps with them, and its chevron turns to match). Labelled **project** outside a git repo. Click the path to open the repository's web page. |
+| **model** | Context bar with %, `used/window` tokens, model `▾`, reasoning effort `▾`, and `✓ Ready` or Claude's working animation. |
 | **tokens** | Session totals for `in`, `cache↑` (writes), `cache↓` (reads) and `out`, with the current turn's share in brackets, counted as each request lands. |
 
 Rows with nothing to show are hidden.
@@ -63,7 +63,7 @@ Rows with nothing to show are hidden.
 **Reading it**
 
 - **Context bar:** a line that shades from green to yellow at 60% and red from 85%. It glides to each new reading, and a soft glow runs along it while Claude works.
-- **Model and effort:** click either (or its `▾`) and the box rolls open with its choices rippling in, centred, a line unrolling from it to the one in force, which is highlighted. Click another and the line glides over to it, its arrowhead leading the way; `✓ Confirm`, to the right of the choices, applies it (the row slides left to make room where it has to; click the chip again to back out). Switching between the two pickers slides the line across. The model list is the one in `/config`, each model named by its version, and picking one switches the model the same way, keeping the context window you are on. The effort pick lasts for this session and saves nothing; in its picker each level plays a flourish of its own as the row opens and again under the pointer, from a slow ripple at low to a flare at max.
+- **Model and effort:** click either (or its `▾`) and the box rolls open with its choices rippling in, centred, a line unrolling from it to the one in force, which is highlighted. Click another and the line glides over to it, its arrowhead leading the way; `✓ Confirm`, to the right of the choices, applies it (the row slides left to make room where it has to; click the chip again to back out). Switching between the two pickers slides the line across. The model list is the one in `/config`, each model named by its version, and picking one switches the model the same way, keeping the context window you are on. The effort pick lasts for this session and saves nothing; in its picker each level plays a flourish of its own as the row opens and again while the pointer rests on it, from a slow ripple at low to a flare at max. In the model picker each model has a colour of its own, and a sweep of light runs across its name the same way. The choice picked keeps playing for as long as it stays picked. The box shows the model and the effort in their picker colours, and both glisten, `▾` and all, while Claude works.
 - **Rate limits:** `5h 42% ⇡3% (1h)` means 42% used, 3 points ahead of an even pace, resetting in 1 hour. `⇣` means you're under pace. Rate limits only show on Pro and Max plans.
 - **First output:** green under 10 s, yellow under 30 s, red above.
 - **Compact:** past 85% context, a `compact context` button appears under the box.
@@ -73,9 +73,9 @@ Rows with nothing to show are hidden.
 
 ## The side panel
 
-In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript. Open it with `/sidebar` or `sidebar ›` in the box, which closes it again too.
+In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript. Open it with `/sidebar` or `SIDEBAR ›` in the box, which closes it again too.
 
-Click a section's header to fold it, smoothly, down to one line that sums it up (`▸ USAGE ── 5-hour 10% · 7-day 5%`), and again to open it. Folded sections stay folded in later sessions. Your Claude Code version sits at the bottom, with a link to the changelog.
+Click a section's name to fold it, smoothly, down to one line that sums it up (`▸ USAGE ── 5-hour 10% · 7-day 5%`), and again to open it. Folded sections stay folded in later sessions. Your Claude Code version sits at the bottom, with a link to the changelog.
 
 - **Usage:** the 5-hour and 7-day rate limits, each with a bar, a tick where a steady pace would put you by now, and the time to its reset.
 - **Session:** messages, session length and how long the latest turn took to its first output and in all (counting up while Claude works), the size of its transcript on disk, then the session's cost: its total, and a bar split by who asked (the main conversation, the advisor, subagents, background work such as titles and compaction, and `earlier`, what the session cost before the plugin saw it), with each part's dollars and share below.
@@ -83,7 +83,7 @@ Click a section's header to fold it, smoothly, down to one line that sums it up 
 - **Advisor:** once the advisor tool has been used, a card with its model, calls, tokens and cost, and a bar for its share of the session's cost.
 - **Agents:** a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, with Claude's animation while it works.
 
-**Keys:** `ctrl+x ←` and `ctrl+x →` widen and narrow it, `ctrl+x x` closes it. Once you click a header, Return or Space folds and opens it. Once closed it stays closed until you open it again.
+**Keys:** `ctrl+x ←` and `ctrl+x →` widen and narrow it, `ctrl+x x` closes it. Once you click a header, Return folds and opens it. Once closed it stays closed until you open it again.
 
 Claude Code docks panels on the right, and only in fullscreen mode at 110 columns or wider; a plugin can't move it to the left.
 
