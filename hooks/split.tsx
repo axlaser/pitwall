@@ -1,17 +1,12 @@
 import type { ClientModule } from 'claude-code'
 
 type Part = { key: string; usd: number; color: string }
-// `track` paints what no part fills, the skin's.
 type Props = { parts: Part[]; width: number; track?: string }
-// Each part's share of the bar as drawn, by its key, gliding to its target.
 type State = { shown: Record<string, number>; target: Record<string, number> }
 
 const TICK_MS = 40
 const TRACK = '#3c3c3c'
 
-// The session's cost as one bar split by who asked: it grows in from the left
-// when first drawn, and when the split changes each part slides to its new
-// share rather than jumping. Settled, the timer changes nothing.
 const Split: ClientModule<Props, State> = (props, surface) => {
   const target = shares(props.parts)
   const s = surface.state
@@ -54,15 +49,14 @@ function shares(parts: Part[]): Record<string, number> {
   return Object.fromEntries(parts.map(part => [part.key, sum > 0 ? part.usd / sum : 0]))
 }
 
-// Whole cells for each value, in proportion, summing to exactly `width`: the
-// largest remainders take the cells rounding down left over.
 export function apportion(values: number[], width: number): number[] {
   const sum = values.reduce((a, b) => a + b, 0)
   if (sum <= 0) return values.map(() => 0)
   const exact = values.map(v => (v / sum) * width)
   const cells = exact.map(Math.floor)
+  const remainders = exact.map((e, i) => e - (cells[i] ?? 0))
   let left = width - cells.reduce((a, b) => a + b, 0)
-  for (const i of exact.map((e, i) => i).sort((a, b) => exact[b]! - Math.floor(exact[b]!) - (exact[a]! - Math.floor(exact[a]!)))) {
+  for (const i of exact.map((e, i) => i).sort((a, b) => (remainders[b] ?? 0) - (remainders[a] ?? 0))) {
     if (left-- <= 0) break
     cells[i]!++
   }

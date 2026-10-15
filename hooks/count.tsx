@@ -1,26 +1,22 @@
 import type { ClientModule } from 'claude-code'
 
 export type Figure = 'tokens' | 'usd' | 'int' | 'wait'
-type Props = { value: number; figure: Figure; before: string; after: string; width: number; color?: string; bold?: boolean; dimColor?: boolean }
-// A roll runs from `from` to `to` in STEPS ticks; `run` names the timer that
-// drives it, so a roll a newer value cut short stops its own timer.
-type State = { from: number; to: number; shown: number; step: number; run: number }
+type Props = { value: number; figure: Figure; before: string; after: string; color?: string; bold?: boolean; dimColor?: boolean }
+type State = { from: number; to: number; shown: number; step: number; rollId: number }
 
 const TICK_MS = 40
 const STEPS = 15
 
-// A figure of the box that rolls to each new value, up or down, easing out
-// over 600 ms. Mounted it shows its value at once; at rest no timer runs.
 const Count: ClientModule<Props, State> = (props, surface) => {
   const s = surface.state
   if (s === undefined) {
-    surface.setState({ from: props.value, to: props.value, shown: props.value, step: STEPS, run: 0 })
+    surface.setState({ from: props.value, to: props.value, shown: props.value, step: STEPS, rollId: 0 })
   } else if (s.to !== props.value) {
-    const run = s.run + 1
-    surface.setState({ from: s.shown, to: props.value, shown: s.shown, step: 0, run })
+    const rollId = (s.rollId ?? 0) + 1
+    surface.setState({ from: s.shown, to: props.value, shown: s.shown, step: 0, rollId })
     const stop = surface.every(TICK_MS, () => {
       const now = surface.state
-      if (now === undefined || now.run !== run) return stop()
+      if (now === undefined || now.rollId !== rollId) return stop()
       const step = now.step + 1
       const eased = 1 - (1 - step / STEPS) ** 3
       surface.setState({ ...now, step, shown: step >= STEPS ? now.to : now.from + (now.to - now.from) * eased })
@@ -28,9 +24,9 @@ const Count: ClientModule<Props, State> = (props, surface) => {
     })
   }
   const at = props.before + figure(props.figure, s?.shown ?? props.value) + props.after
-  // shortcut: the region is the target's width, so a frame drawn wider (a roll
-  // down past a power of ten, a wait up from `9.9s` to `15s`) shows the target.
-  const text = [...at].length > props.width ? props.before + figure(props.figure, props.value) + props.after : at.padStart(props.width)
+  const target = props.before + figure(props.figure, props.value) + props.after
+  const width = [...target].length
+  const text = [...at].length > width ? target : at.padStart(width)
   const { Text } = surface.elements
   return (
     <Text color={props.color} bold={props.bold} dimColor={props.dimColor}>
@@ -40,8 +36,6 @@ const Count: ClientModule<Props, State> = (props, surface) => {
 }
 
 export default Count
-
-// --- formatters, ported from src/render.rs; the hooks module draws with these too
 
 export function figure(kind: Figure, value: number): string {
   if (kind === 'tokens') return formatTokens(Math.round(value))
@@ -70,7 +64,6 @@ export function formatElapsed(ms: number): string {
   return `${secs}s`
 }
 
-// `1.2s` under ten seconds, where a tenth matters; formatElapsed's above.
 function formatWait(ms: number): string {
   return ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : formatElapsed(ms)
 }

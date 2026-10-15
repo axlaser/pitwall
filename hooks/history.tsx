@@ -1,14 +1,8 @@
 import type { Elements } from 'claude-code'
 import type { Palette } from './skin'
 
-// The chat history in a skin's colours: what the hooks module draws in place
-// of Claude Code's own rows when a skin other than classic paints the chat.
-// Pure builders: the hooks module hands each the surface's elements, the
-// palette and the row's props.
-
 type El = Elements['terminal']
 
-// What kind of work a call does, by its tool: the colour its row takes.
 type Kind = 'read' | 'edit' | 'shell' | 'web' | 'agent' | 'mcp' | 'other'
 const KINDS: Record<string, Kind> = {
   Read: 'read', Glob: 'read', Grep: 'read', LS: 'read', NotebookRead: 'read',
@@ -21,25 +15,17 @@ const kindOf = (tool: string): Kind => KINDS[tool] ?? (tool.startsWith('mcp__') 
 const inkOf = (P: Palette, kind: Kind) =>
   ({ read: P.info, edit: P.ok, shell: P.accent, web: P.cool, agent: P.alt, mcp: P.warn, other: P.text })[kind]
 
-// A tool's name as its row says it: an MCP tool's server and tool, a task
-// an Agent.
 const nameOf = (tool: string) => {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(tool)
   return mcp ? `${mcp[1]} · ${mcp[2]}` : tool === 'Task' ? 'Agent' : tool
 }
 
-// Where the session's files are, to name a path by: inside the working
-// directory from it, else from home as `~`. Either separator ends a folder's
-// name, so a Windows path shortens as a POSIX one does.
 export type Where = { cwd: string; home: string | null }
 const isUnder = (path: string, dir: string | null): dir is string =>
   !!dir && path.startsWith(dir) && (path[dir.length] === '/' || path[dir.length] === '\\')
 export const shortPath = (path: string, where: Where) =>
   isUnder(path, where.cwd) ? path.slice(where.cwd.length + 1) : isUnder(path, where.home) ? `~${path.slice(where.home.length)}` : path
 
-// What a call's row says it acted on: a command's first line, a file, a
-// pattern and where, a page, a search, a task's description; else the
-// input's first string.
 export function summaryOf(tool: string, input: unknown, where: Where): string {
   const i = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const str = (key: string) => (typeof i[key] === 'string' ? (i[key] as string) : '')
@@ -72,8 +58,6 @@ export function summaryOf(tool: string, input: unknown, where: Where): string {
   }
 }
 
-// The lines an edit adds and takes away, by its input: what it writes
-// against what it replaces.
 export function changeOf(tool: string, input: unknown): { added: number; removed: number } | null {
   const i = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const lines = (v: unknown) => (typeof v === 'string' && v !== '' ? v.split('\n').length : 0)
@@ -88,7 +72,6 @@ export function changeOf(tool: string, input: unknown): { added: number; removed
   return null
 }
 
-// How long a call took: a tenth of a second under a minute.
 export function tookLabel(ms: number): string {
   if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
@@ -98,11 +81,6 @@ export function tookLabel(ms: number): string {
 
 type ToolProps = { tool: string; input: unknown; isRunning: boolean; isErrored: boolean; isInterrupted: boolean }
 
-// A tool call's row: a mark in its kind's colour (hollow while it runs, a
-// cross in the skin's red when it failed, a square when it was cut short),
-// its name, what it acted on, and at the right the lines an edit changed and
-// how long it took. Claude Code's own result block hangs under it as ever;
-// an error's text and `Interrupted` are that block's to say.
 export function toolRow(el: El, P: Palette, props: ToolProps, took: number | undefined, where: Where) {
   const { Box, Text } = el
   const ink = inkOf(P, kindOf(props.tool))
@@ -149,7 +127,6 @@ export function toolRow(el: El, P: Palette, props: ToolProps, took: number | und
   )
 }
 
-// The person's prompt, in a rounded outline sized to it.
 export function promptRow(el: El, P: Palette, text: string) {
   const { Box, Text } = el
   return (
@@ -160,7 +137,6 @@ export function promptRow(el: El, P: Palette, text: string) {
   )
 }
 
-// A table in a reply's markdown: its header, each column's alignment, its rows.
 type Align = 'left' | 'center' | 'right'
 export type Table = { header: string[]; align: Align[]; rows: string[][] }
 export type Part = { kind: 'text'; text: string } | { kind: 'table'; table: Table }
@@ -172,9 +148,6 @@ const cellsOf = (line: string) => {
 const isRow = (line: string) => /^\s*\|.*\|\s*$/.test(line) || (line.includes('|') && line.trim() !== '' && !/^\s*```/.test(line))
 const isSeparator = (line: string) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(line)
 
-// A reply's markdown cut into its runs of text and its tables, a table being
-// a row, a separator under it and the rows that follow; none inside a fenced
-// block, whose lines are code.
 export function splitTables(markdown: string): Part[] {
   const lines = markdown.split('\n')
   const parts: Part[] = []
@@ -212,12 +185,8 @@ export function splitTables(markdown: string): Part[] {
   return parts
 }
 
-// A cell's text as drawn: its inline markup, emphasis and code ticks, dropped.
 const plain = (cell: string) => cell.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1').replace(/`([^`]*)`/g, '$1').replace(/\*(.+?)\*/g, '$1')
 
-// A table as a card: a rounded border, the header in the accent, the rows
-// banded on the track's shade, each column as wide as its widest cell and
-// cut where the transcript is narrower.
 export function tableCard(el: El, P: Palette, table: Table, key: string) {
   const { Box, Text } = el
   const columns = table.header.length
@@ -246,9 +215,6 @@ export function tableCard(el: El, P: Palette, table: Table, key: string) {
 
 type ReplyProps = { text: string; isFirstOfReply: boolean; isSummary?: true }
 
-// A block of Claude's reply: the bullet that opens a reply in the accent,
-// then its markdown as Claude Code draws a reply's, its tables as cards. A
-// summary keeps its faint mark.
 export function replyBlock(el: El, P: Palette, props: ReplyProps) {
   const { Box, Text, Markdown } = el
   const parts = splitTables(props.text)

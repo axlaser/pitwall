@@ -1,11 +1,5 @@
 name: ci
 
-# The gates every commit has to pass: Claude Code's own validator reads the
-# manifest, the marketplace file and the hooks module the way the engine will,
-# and its test runner drives the plugin's hooks against the engine itself. Run
-# on all three platforms because the plugin branches on the OS for the
-# clipboard, the transcript stream and notifications.
-
 on:
   push:
     branches: ["**"]
@@ -29,7 +23,7 @@ jobs:
         os: [ubuntu-24.04, macos-15, windows-2025]
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
       - name: Install Claude Code
         if: runner.os != 'Windows'
@@ -43,6 +37,14 @@ jobs:
         run: |
           irm https://claude.ai/install.ps1 | iex
           "$env:USERPROFILE\.local\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Clicks are Buttons
+        shell: bash
+        run: |
+          if grep -rn "onPointer" hooks/; then
+            echo "::error::A Client must not call surface.onPointer: draw a Button (CLAUDE.md, Clicks are Buttons)"
+            exit 1
+          fi
 
       - name: Validate
         run: |

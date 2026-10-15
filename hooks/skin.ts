@@ -1,42 +1,25 @@
-// The colours statusbox draws in, by what they mean, and the skins that fill
-// them. A colour is a theme key or a colour's name, which follows the person's
-// terminal theme, or a hex; a sweep or a ramp blends, so what feeds one is hex.
+import type { Hex } from './glow'
+
 export type Palette = {
-  // Section names, the working spark, the session's card, the main thread's spend.
   accent: string
-  // A figure.
   text: string
-  // Labels, rules, the frame, a figure at rest.
   muted: string
-  // Within bounds, falling, warm, done; past a first bound; past the last, failed.
   ok: string
   warn: string
   bad: string
-  // Input tokens, the path, commits ahead, the agents' spend.
   info: string
-  // Output tokens, the advisor, commits behind.
   alt: string
-  // The usage card, background spend.
   cool: string
-  // The hex the working spark's glow washes toward white from.
-  accentShine: string
-  // The context bar's ramp, low to high, its empty track and its pace mark.
-  ramp: [string, string, string]
-  track: string
-  mark: string
-  // A model's colour by its family, hex for its sweep; `other` for the
-  // default and anything newer.
-  models: { opus: string; sonnet: string; haiku: string; fable: string; other: string }
-  // An effort level's colour, and the hex its glow washes toward white from.
-  efforts: Record<'low' | 'medium' | 'high' | 'xhigh' | 'max', { color: string; shine: string }>
-  // A skin's own, which classic has none of: its name in /theme, and the
-  // background its theme and the terminal paint under everything.
+  accentShine: Hex
+  ramp: [Hex, Hex, Hex]
+  track: Hex
+  mark: Hex
+  models: { opus: Hex; sonnet: Hex; haiku: Hex; fable: Hex; other: Hex }
+  efforts: Record<'low' | 'medium' | 'high' | 'xhigh' | 'max', { color: string; shine: Hex }>
   name?: string
-  bg?: string
+  bg?: Hex
 }
 
-// The colours statusbox has always drawn in: the terminal theme's own names,
-// so they follow it, with hex where a sweep or ramp needs one.
 export const CLASSIC: Palette = {
   accent: 'claude',
   text: 'white',
@@ -63,10 +46,8 @@ export const CLASSIC: Palette = {
   },
 }
 
-// A skin in hex throughout: its glow washes from its accent, and each effort
-// level's from its own colour. `efforts` runs low, medium, high, xhigh, max.
-type Hex = Omit<Palette, 'accentShine' | 'efforts' | 'name' | 'bg'> & { name: string; bg: string; efforts: [string, string, string, string, string] }
-const hex = ({ efforts: [low, medium, high, xhigh, max], ...p }: Hex): Palette => ({
+type Spec = Omit<Palette, 'accentShine' | 'efforts' | 'name' | 'bg'> & { name: string; bg: Hex; accent: Hex; efforts: [Hex, Hex, Hex, Hex, Hex] }
+const hex = ({ efforts: [low, medium, high, xhigh, max], ...p }: Spec): Palette => ({
   ...p,
   accentShine: p.accent,
   efforts: {
@@ -183,8 +164,6 @@ const NORD_LIGHT = hex({
   efforts: ['#4c566a', '#2e3440', '#5e81ac', '#d08770', '#bf616a'],
 })
 
-// Noir: black and white, a figure's weight in its brightness, danger alone
-// in red.
 const NOIR = hex({
   name: 'Noir', bg: '#0a0a0a',
   accent: '#ffffff', text: '#e8e8e8', muted: '#6e6e6e',
@@ -204,7 +183,6 @@ const NOIR_LIGHT = hex({
   efforts: ['#9e9e9e', '#5a5a5a', '#3a3a3a', '#1a1a1a', '#c62828'],
 })
 
-// Mono: greys only, the brighter the more it asks to be read.
 const MONO = hex({
   name: 'Mono', bg: '#1c1c1c',
   accent: '#c8c8c8', text: '#d0d0d0', muted: '#707070',
@@ -224,8 +202,6 @@ const MONO_LIGHT = hex({
   efforts: ['#9a9a9a', '#6a6a6a', '#4a4a4a', '#2e2e2e', '#111111'],
 })
 
-// Each skin's palette for a dark theme and a light one. Classic's names follow
-// the terminal's theme by themselves, so it keeps one palette for both.
 export const SKINS: Record<string, { dark: Palette; light: Palette }> = {
   classic: { dark: CLASSIC, light: CLASSIC },
   'tokyo-night': { dark: TOKYO_NIGHT, light: TOKYO_DAY },
@@ -237,16 +213,13 @@ export const SKINS: Record<string, { dark: Palette; light: Palette }> = {
   mono: { dark: MONO, light: MONO_LIGHT },
 }
 
-// The palette a skin paints in on the theme in force; classic's for a name
-// that is not a skin.
 export function paletteOf(skin: string, isLight: boolean): Palette {
   const pair = SKINS[skin] ?? SKINS.classic ?? { dark: CLASSIC, light: CLASSIC }
   return isLight ? pair.light : pair.dark
 }
 
-// The skin and the lightness a theme is one of statusbox's for: Claude Code
-// names themes/<skin>-<dark|light>.json `custom:statusbox:<skin>-<dark|light>`.
-// Null for any other theme.
+// Claude Code names themes/<skin>-<dark|light>.json
+// `custom:statusbox:<skin>-<dark|light>`.
 export function skinOfTheme(theme: unknown): { skin: string; isLight: boolean } | null {
   const m = typeof theme === 'string' ? /^custom:statusbox:(.+)-(dark|light)$/.exec(theme) : null
   return m?.[1] && m[1] !== 'classic' && SKINS[m[1]] ? { skin: m[1], isLight: m[2] === 'light' } : null
@@ -257,17 +230,10 @@ export function skinOfTheme(theme: unknown): { skin: string; isLight: boolean } 
 // name says nothing, so dark.
 export const isLightTheme = (theme: unknown) => (typeof theme === 'string' && theme.startsWith('light')) || skinOfTheme(theme)?.isLight === true
 
-// Claude Code's own theme in a skin's colours, over its base theme of the same
-// lightness: each colour its chat, its prompt, its diffs and its spinner draw
-// in takes the slot that means the same in the box. What a skin has no slot
-// for (the rainbow, fast mode, Clawd's eyes) stays the base's. Null for
-// classic, whose colours are the theme's own.
 export type Theme = { name: string; base: 'dark' | 'light'; overrides: Record<string, string> }
 export function themeOf(p: Palette, isLight: boolean): Theme | null {
   const { name, bg } = p
   if (name === undefined || bg === undefined) return null
-  // A colour laid over the background, a part in `t`; a shimmer is its colour
-  // a quarter toward white, as the base themes' are.
   const over = (color: string, t: number) => mix(bg, color, t)
   const shimmer = (color: string) => mix(color, '#ffffff', 0.25)
   return {
@@ -333,7 +299,6 @@ export function themeOf(p: Palette, isLight: boolean): Theme | null {
   }
 }
 
-// Two hex colours blended, a part `t` of the second.
 function mix(from: string, to: string, t: number): string {
   const rgb = (color: string) => [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16))
   const [a, b] = [rgb(from), rgb(to)]
