@@ -1,6 +1,9 @@
 import type { ClientModule } from 'claude-code'
 
-type Props = { isWorking: boolean }
+// `accent` paints the spark and the word, `shine` is the hex the glow washes
+// toward white from, `ok` paints `✓ Ready`: the skin's, Claude's own where
+// not given.
+type Props = { isWorking: boolean; accent?: string; shine?: string; ok?: string }
 type State = { isWorking: boolean; frame: number }
 
 // The glow moves a letter a tick; the spark turns every other tick.
@@ -13,11 +16,15 @@ const TRACK = 1
 // renderer (VS Code with GPU acceleration off) cuts them; WebGL draws them whole.
 const SPARK = ['·', '✢', '✶', '✻', '✽', '✻', '✶', '✢']
 const WORD = 'Working'
-// The glow by distance from its centre, as bar.tsx's shine: Claude's accent
-// (the theme's `claude`) washed toward white, brightest in the middle.
-const ACCENT = [215, 119, 87]
+// The glow by distance from its centre, as bar.tsx's shine: the accent's hex
+// (Claude's, the theme's `claude`, where none is given) washed toward white,
+// brightest in the middle.
+const ACCENT = '#d77757'
 const GLOW = [0.75, 0.5, 0.3, 0.12]
-const glow = (wash: number) => `#${ACCENT.map(v => Math.round(v + (255 - v) * wash).toString(16).padStart(2, '0')).join('')}`
+const glow = (base: string, wash: number) => {
+  const rgb = /^#[0-9a-f]{6}$/i.test(base) ? [1, 3, 5].map(i => parseInt(base.slice(i, i + 2), 16)) : [215, 119, 87]
+  return `#${rgb.map(v => Math.round(v + (255 - v) * wash).toString(16).padStart(2, '0')).join('')}`
+}
 
 // Claude at work: its spark turning and pulsing in its cell, and a glow
 // sweeping across it and on over `working`. At rest it is `✓ Ready` in
@@ -38,9 +45,9 @@ const Claude: ClientModule<Props, State> = (props, surface) => {
   if (!props.isWorking) {
     return (
       <Text>
-        <Text color="green">✓</Text>
+        <Text color={props.ok ?? 'green'}>✓</Text>
         <Text> </Text>
-        <Text color="green">Ready</Text>
+        <Text color={props.ok ?? 'green'}>Ready</Text>
       </Text>
     )
   }
@@ -52,7 +59,7 @@ const Claude: ClientModule<Props, State> = (props, surface) => {
   const washOf = (at: number) => GLOW[Math.abs(at - shine)]
   const tint = (at: number) => {
     const wash = washOf(at)
-    return wash === undefined ? 'claude' : glow(wash)
+    return wash === undefined ? (props.accent ?? 'claude') : glow(props.shine ?? ACCENT, wash)
   }
   const isBright = (at: number) => (washOf(at) ?? 0) >= 0.5
   const track = (

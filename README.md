@@ -114,10 +114,42 @@ In `/config`, under statusbox:
 | Alert sounds | on | |
 | Context alert (%) | 70 | 0 turns it off |
 | Rate limit alert (%) | 80 | 0 turns it off |
+| Skin the chat history | on | With a statusbox theme, draws the chat in its colours too |
+| Paint the terminal background | on | With a statusbox theme, sets the terminal's background to its colour |
+
+**Themes.** statusbox adds fourteen themes to `/theme`: Tokyo Night and Tokyo Day, Dracula and Alucard, Catppuccin Mocha and Latte, Gruvbox Dark and Light, Nord and Nord Light, Noir and Noir Light (black and white, with red only for danger), and Mono and Mono Light (greys only). Picking one paints everything in its palette: Claude Code's own text, inline code, diffs, prompt border and spinner, plus the box, the side panel, the chat history and the terminal's background. With any other theme, Claude Code's own included, statusbox keeps its classic look, in your terminal theme's colours. Switching theme repaints at once. Claude Code reads the themes as it starts, so after installing or updating statusbox, restart it to see them.
+
+With a statusbox theme, statusbox draws the chat history too, in the terminal. Each tool call gets a row in its kind's colour: reads, edits, shell commands, web, agents and MCP tools. The row shows what it acted on, the lines an edit adds and removes, and how long it took. Your prompts sit in a rounded outline, and Claude's replies open on the skin's bullet, with tables drawn as banded cards. Tool output, grouped calls and the text inside a reply keep Claude Code's own drawing, in the skin's theme. Turn **Skin the chat history** off to leave the chat to Claude Code.
+
+**The background.** Claude Code draws on your terminal's own background, which no theme can change. So with a statusbox theme, statusbox sets the terminal's background to the theme's while Claude Code runs, and puts yours back when you exit. This works on macOS and Linux, in terminals that take the OSC 11 escape sequence: VS Code's, iTerm2, Ghostty, kitty and WezTerm. Apple Terminal ignores it. If Claude Code crashes, the colour stays until you open a new terminal or run `printf '\e]111\a'` in that one.
+
+On Windows, or in a terminal that ignores it, set the background yourself. In VS Code, add this to `settings.json`, with your theme's colour from the table below:
+
+```json
+"workbench.colorCustomizations": { "terminal.background": "#1a1b26" }
+```
+
+| Dark theme | Background | Light theme | Background |
+|------------|------------|-------------|------------|
+| Tokyo Night | `#1a1b26` | Tokyo Day | `#e1e2e7` |
+| Dracula | `#282a36` | Alucard | `#fffbeb` |
+| Catppuccin Mocha | `#1e1e2e` | Catppuccin Latte | `#eff1f5` |
+| Gruvbox Dark | `#282828` | Gruvbox Light | `#fbf1c7` |
+| Nord | `#2e3440` | Nord Light | `#eceff4` |
+| Noir | `#0a0a0a` | Noir Light | `#ffffff` |
+| Mono | `#1c1c1c` | Mono Light | `#f2f2f2` |
 
 ## Troubleshooting
 
 **Nothing shows.** Run `/plugin` and check statusbox is installed and enabled, and that `claude --version` is 2.1.299 or later. A hook that fails shows a dim `statusbox: …` line in the transcript; `claude --debug` writes the full reason to the debug log.
+
+**A skin's colours look washed out.** VS Code's terminal shifts colours to keep them readable (`terminal.integrated.minimumContrastRatio`, 4.5 by default). Set it to 1 to see the skin's own colours.
+
+**The screen is garbled.** Resizing the terminal redraws it. For a key that does the same, bind Claude Code's `app:redraw` (it has none by default) in `~/.claude/keybindings.json`:
+
+```json
+{ "bindings": [{ "context": "Global", "bindings": { "ctrl+x r": "app:redraw" } }] }
+```
 
 **The box is gone but the plugin is enabled.** `ctrl+x ctrl+a` hides it; press it again.
 

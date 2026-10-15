@@ -1,7 +1,8 @@
 import type { ClientModule } from 'claude-code'
 
-// `summary` is what the header says of its section while it is folded.
-type Props = { name: string; isOpen: boolean; summary: string; tint: string; width: number }
+// `summary` is what the header says of its section while it is folded;
+// `accent` paints the name and `muted` the rule, the skin's.
+type Props = { name: string; isOpen: boolean; summary: string; tint: string; width: number; accent?: string; muted?: string }
 // `rule` is how many cells of the rule are drawn, moving a few a tick toward
 // `to`; `isOpen` is whether the section was open when it last set off.
 type State = { isOpen: boolean; rule: number; to: number }
@@ -49,11 +50,11 @@ const Fold: ClientModule<Props, State> = (props, surface) => {
   return (
     <Box>
       <Button plain key={`fold-${props.name}`} onPress={() => surface.post({ toggle: true })}>
-        <Text color="claude" bold>
+        <Text color={props.accent ?? 'claude'} bold>
           {head}
         </Text>
       </Button>
-      <Text color="gray">{` ${'─'.repeat(drawn)}${' '.repeat(room - drawn - (isSummed ? summary.length : 0))}`}</Text>
+      <Text color={props.muted ?? 'gray'}>{` ${'─'.repeat(drawn)}${' '.repeat(room - drawn - (isSummed ? summary.length : 0))}`}</Text>
       {isSummed && <Text color={props.tint}>{summary}</Text>}
     </Box>
   )

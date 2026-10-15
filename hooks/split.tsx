@@ -1,7 +1,8 @@
 import type { ClientModule } from 'claude-code'
 
 type Part = { key: string; usd: number; color: string }
-type Props = { parts: Part[]; width: number }
+// `track` paints what no part fills, the skin's.
+type Props = { parts: Part[]; width: number; track?: string }
 // Each part's share of the bar as drawn, by its key, gliding to its target.
 type State = { shown: Record<string, number>; target: Record<string, number> }
 
@@ -43,7 +44,7 @@ const Split: ClientModule<Props, State> = (props, surface) => {
       {props.parts.map((part, i) => (
         <Text color={part.color}>{'━'.repeat(cells[i] ?? 0)}</Text>
       ))}
-      <Text color={TRACK}>{'─'.repeat(props.width - filled)}</Text>
+      <Text color={props.track ?? TRACK}>{'─'.repeat(props.width - filled)}</Text>
     </Text>
   )
 }

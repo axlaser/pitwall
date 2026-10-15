@@ -8,8 +8,20 @@ import type { ClientModule } from 'claude-code'
 // `isPicked` marks the choice the wire ends on (the one in force until another
 // is clicked), `isInForce` the one in force; `index` and `count` place it in
 // its row, for the ripple it fades in and out on; `isClosing` while the
-// picker folds away.
-type Props = { id: string; label: string; level: string; color: string; isPicked: boolean; isInForce: boolean; index: number; count: number; isClosing: boolean }
+// picker folds away; `flare` the colours max's flourish flickers through,
+// the skin's.
+type Props = {
+  id: string
+  label: string
+  level: string
+  color: string
+  isPicked: boolean
+  isInForce: boolean
+  index: number
+  count: number
+  isClosing: boolean
+  flare?: string[]
+}
 // `tick` counts up from the play's start, as the row opens; `age` from the
 // pill's first drawing until it has faded in; `gone` from the picker starting
 // to fold until it has faded out; `hover` is the frame the loop stands at, the
@@ -122,7 +134,9 @@ const Pill: ClientModule<Props, State> = (props, surface) => {
   // What a frame of the play draws: an effort level's glyph and colour, or
   // the colour of each of a model's letters; past its last, the pill at rest.
   const glyphAt = (at: number) => (f ? (at < f.frames.length ? f.frames[at] : f.rest) : '')
-  const colorAt = (at: number) => (f?.colors && at < f.frames.length ? (f.colors[at % f.colors.length] ?? props.color) : props.color)
+  // A flourish that flickers through colours takes the skin's, where given.
+  const flicker = f?.colors && (props.flare ?? f.colors)
+  const colorAt = (at: number) => (flicker && f && at < f.frames.length ? (flicker[at % flicker.length] ?? props.color) : props.color)
   // A model's pill at a frame of its sweep, cell by cell from the padding
   // before its name to the padding after: lit, those two are bars of its
   // colour, which the light crosses too. Past the last frame, at rest.

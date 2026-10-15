@@ -5,7 +5,11 @@ import type { Advisor, Agent, Alerted, Cache, Git, Menu, Motion, Place, Preview,
 import { figure, formatElapsed } from './count'
 import { apportion } from './split'
 import type { Figure } from './count'
+import { ground, keepGround, unground } from './ground'
 import { notify } from './notify'
+import { CLASSIC, isLightTheme, paletteOf, skinOfTheme } from './skin'
+import { promptRow, replyBlock, toolRow } from './history'
+import type { Palette } from './skin'
 
 // The claude-statusline box, rebuilt on events instead of a process per tick:
 // every event writes an atom, the one AbovePrompt hook reads them, and a write
@@ -42,6 +46,17 @@ const previews = atom({ plugin: 'statusbox', key: 'previews' } as const, [] as P
 const now = atom({ plugin: 'statusbox', key: 'now' } as const, 0)
 // Set when the person closes the panel, so a reload does not open it again.
 const panelClosed = atom({ plugin: 'statusbox', key: 'panelClosed' } as const, false)
+// The skin of Claude Code's theme (classic for one not statusbox's), and
+// whether the theme is a light one: together they pick the palette both
+// drawings paint in.
+const skin = atom({ plugin: 'statusbox', key: 'skin' } as const, 'classic' as string)
+const isLight = atom({ plugin: 'statusbox', key: 'isLight' } as const, false)
+// Whether the skin paints the chat history too (the /config toggle), and how
+// long each tool call took, by its id, the last TOOK_KEPT of them.
+const chatSkinned = atom({ plugin: 'statusbox', key: 'chatSkinned' } as const, true)
+const grounded = atom({ plugin: 'statusbox', key: 'grounded' } as const, true)
+const took = atom({ plugin: 'statusbox', key: 'took' } as const, {} as Record<string, number>)
+const TOOK_KEPT = 200
 // Which threshold alerts have fired, so each fires once until it re-arms.
 const NOT_ALERTED: Alerted = { context: false, rate: false, resetsAt: null }
 const alerted = atom({ plugin: 'statusbox', key: 'alerted' } as const, NOT_ALERTED)
@@ -59,6 +74,13 @@ const MENU_TURN = ['▾', '▸', '▴']
 // The model each family alias names, by its picker name (`opus` -> `Opus 5.5`),
 // read from Claude Code's model catalog each time the model picker opens.
 let families: Record<string, string> = {}
+
+// The skin's colours this drawing paints in: both render hooks set it before
+// they build a span, so the helpers that colour one read it as they run.
+let P: Palette = CLASSIC
+// What the Clients that draw a glow or a ramp take of it, as props.
+const sparkInk = () => ({ accent: P.accent, shine: P.accentShine, ok: P.ok })
+const barInk = () => ({ ramp: P.ramp, track: P.track, markColor: P.mark })
 const ENDED_SHOWN = 5
 const ENDED = new Set(['completed', 'failed', 'killed'])
 const RATE: Record<string, [string, number]> = { five_hour: ['5-hour', 18_000], seven_day: ['7-day', 604_800] }
@@ -98,6 +120,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await seedSession($)
+    await seedSkin($, options)
     await $.command.register({ name: 'sidebar', description: 'Open the side panel: usage, the session and its cost, the prompt cache, the advisor and agents' })
     $.clock.every(1000, () => {
       void $.clock
@@ -119,11 +142,41 @@ export const register: Register = (on, options) => {
   // session was already seeded for (`claude --resume` starting) is left alone.
   on('classic.SessionStart', async ($, e, next) => {
     const isAnother = e.source === 'resume' || e.source === 'clear' || e.source === 'fork'
-    if (isAnother && e.session_id !== seededFor) void seedSession($).catch(() => undefined)
+    if (isAnother && e.session_id !== seededFor) {
+      void seedSession($).catch(() => undefined)
+      void seedSkin($, options)
+        .then(() => keepGround($))
+        .catch(() => undefined)
+    }
     return next(e)
   })
 
+  // Claude Code's theme picks the skin: one of statusbox's own (themes/)
+  // paints the box, the panel and the background in it too, and any other
+  // gives them classic. A theme switched in /theme repaints both drawings.
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const r = await next(e)
+    if ('value' in r) {
+      await update($, skin, () => skinOfTheme(r.value)?.skin ?? 'classic')
+      await update($, isLight, () => isLightTheme(r.value))
+    }
+    return r
+  })
+  on('config.set', { key: 'statusbox.chatSkin' }, async ($, e, next) => {
+    const r = await next(e)
+    if ('value' in r) await update($, chatSkinned, () => r.value !== false)
+    return r
+  })
+  on('config.set', { key: 'statusbox.terminalBackground' }, async ($, e, next) => {
+    const r = await next(e)
+    if ('value' in r) await update($, grounded, () => r.value !== false)
+    return r
+  })
+
   on('session.end', async ($, e, next) => {
+    // Leaving the process, the terminal gets its own background back; a /clear
+    // or a /resume goes on in it, in the same colours.
+    if (e.reason !== 'clear' && e.reason !== 'resume') await unground($)
     if (e.reason === 'clear') {
       const t = await $.clock.now()
       await update($, totals, () => ZERO)
@@ -298,10 +351,35 @@ export const register: Register = (on, options) => {
   })
 
   // The git-refresh hook's job: a tool that may have written makes git stale.
+  // It also times the call, from its asking to its answer, for its row.
   on('tool.call', async ($, e, next) => {
+    const started = await $.clock.now()
     const r = await next(e)
     if (r.deny === undefined && !r.isReadOnly) scheduleGit($)
+    const id = e.tool_use_id
+    if (id) {
+      const ms = (await $.clock.now()) - started
+      await update($, took, x => Object.fromEntries([...Object.entries(x), [id, ms] as const].slice(-TOOK_KEPT)))
+    }
     return r
+  })
+
+  // The chat history in the skin's colours (history.tsx): a tool call's row,
+  // the person's prompt, a block of Claude's reply. Classic, the toggle off or
+  // another surface leaves each to Claude Code's own drawing, as does a prompt
+  // the person did not type.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || !(await isChatSkinned($))) return next(e)
+    const [ms, p] = await Promise.all([read($, took), read($, place)])
+    return toolRow($.ui.resolve(e), P, e.props, ms[e.props.tool_use_id], { cwd: p?.cwd ?? '', home: p?.home ?? null })
+  })
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.origin.kind !== 'composer' || !(await isChatSkinned($))) return next(e)
+    return promptRow($.ui.resolve(e), P, e.props.text)
+  })
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || !(await isChatSkinned($))) return next(e)
+    return replyBlock($.ui.resolve(e), P, e.props)
   })
 
   // $.session.turns counts a slash command and its output as two prompts, so
@@ -378,6 +456,10 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     // The band is raised on these two alone, the two that draw a Client.
     if (e.props.hasSurvey || (e.surface !== 'terminal' && e.surface !== 'desktop')) return next(e)
+    await paint($)
+    // The terminal's background in the skin's: a child runs only when the
+    // colour asked for changes.
+    if (e.surface === 'terminal') ground($, (await read($, grounded)) ? (P.bg ?? null) : null)
     // The panel opens by itself only where it docks beside the transcript;
     // on the main screen it would sit above the prompt, a third of it tall.
     if (!isPanelOffered && e.viewport?.isFullscreen === true) {
@@ -455,7 +537,7 @@ export const register: Register = (on, options) => {
             width={widthOf([span])}
             props={{
               label: span.t.slice(0, -2),
-              color: span.c ?? 'magenta',
+              color: span.c ?? P.alt,
               ...(kind === 'effort' && span.v && { shine: effortShine(span.v) }),
               scope: kind,
               isShining: e.props.isWorking,
@@ -480,7 +562,7 @@ export const register: Register = (on, options) => {
           key={span.w.isArrow ? 'wire-arrow' : 'wire'}
           module="./wire.tsx"
           width={widthOf([span])}
-          props={{ ...span.w, width: widthOf([span]), color: span.c ?? 'gray', isClosing: open?.isClosing === true }}
+          props={{ ...span.w, width: widthOf([span]), color: span.c ?? P.muted, isClosing: open?.isClosing === true }}
         />
       ) : span.el === 'pick' && open ? (
         // A choice is one Client, so it ripples in and out and an effort
@@ -499,6 +581,7 @@ export const register: Register = (on, options) => {
             index: open.options.indexOf(span.v ?? ''),
             count: open.options.length,
             isClosing: open.isClosing === true,
+            flare: [P.bad, P.warn, P.text, P.warn],
           }}
         />
       ) : span.el === 'confirm' ? (
@@ -512,10 +595,10 @@ export const register: Register = (on, options) => {
           key="bar"
           module="./bar.tsx"
           width={widthOf([span])}
-          props={{ percent: r?.percent ?? 0, isWorking: e.props.isWorking, width: BAR_WIDTH }}
+          props={{ percent: r?.percent ?? 0, isWorking: e.props.isWorking, width: BAR_WIDTH, ...barInk() }}
         />
       ) : span.el === 'claude' ? (
-        <Client key="claude" module="./claude.tsx" width={widthOf([span])} props={{ isWorking: e.props.isWorking }} />
+        <Client key="claude" module="./claude.tsx" width={widthOf([span])} props={{ isWorking: e.props.isWorking, ...sparkInk() }} />
       ) : span.n ? (
         <Client key={`n-${span.n.k}`} module="./count.tsx" width={widthOf([span])} props={countProps({ ...span, n: span.n })} />
       ) : (
@@ -593,6 +676,7 @@ export const register: Register = (on, options) => {
   // it has been consulted, and this session's agents with their work. Claude
   // Code docks a pane on the right; its layout has no slot on the left.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    await paint($)
     const [ags, t, adv, r, sp, n, m, fast, c, folds, moving, bytes] = await Promise.all([
       read($, agents),
       read($, now),
@@ -623,22 +707,22 @@ export const register: Register = (on, options) => {
     ]
     const state = (a: Agent) =>
       a.doneAt === null && Client ? (
-        <Client key={`working-${a.id}`} module="./claude.tsx" width={WORKING.length} props={{ isWorking: true }} />
+        <Client key={`working-${a.id}`} module="./claude.tsx" width={WORKING.length} props={{ isWorking: true, ...sparkInk() }} />
       ) : a.doneAt === null ? (
-        <Text color="claude">Working</Text>
+        <Text color={P.accent}>Working</Text>
       ) : a.status === 'completed' ? (
-        <Text color="green">✓ done</Text>
+        <Text color={P.ok}>✓ done</Text>
       ) : (
-        <Text color="red">{`✗ ${a.status}`}</Text>
+        <Text color={P.bad}>{`✗ ${a.status}`}</Text>
       )
     // A section's name in the accent behind its chevron, ruled to the edge,
     // folded ones with their summary at the end; fold.tsx sweeps the rule out.
-    const header = ({ name, summary, tint = 'gray' }: Section, isOpen: boolean) =>
+    const header = ({ name, summary, tint = P.muted }: Section, isOpen: boolean) =>
       Client ? (
-        <Client key={`fold-${name}`} module="./fold.tsx" width={inner} props={{ name, isOpen, summary, tint, width: inner }} />
+        <Client key={`fold-${name}`} module="./fold.tsx" width={inner} props={{ name, isOpen, summary, tint, width: inner, accent: P.accent, muted: P.muted }} />
       ) : (
         <Button plain key={`fold-${name}`} onPress={() => void toggleFold($, name)}>
-          <Text color="claude" bold>{`${isOpen ? '▾' : '▸'} ${name}`}</Text>
+          <Text color={P.accent} bold>{`${isOpen ? '▾' : '▸'} ${name}`}</Text>
           {!isOpen && <Text color={tint}>{` ${summary}`}</Text>}
         </Button>
       )
@@ -663,7 +747,7 @@ export const register: Register = (on, options) => {
     const flat = (percent: number, color: string) => (
       <Text>
         <Text color={color}>{'━'.repeat(Math.round((Math.min(100, Math.max(0, percent)) / 100) * meter))}</Text>
-        <Text color="gray">{'─'.repeat(meter - Math.round((Math.min(100, Math.max(0, percent)) / 100) * meter))}</Text>
+        <Text color={P.muted}>{'─'.repeat(meter - Math.round((Math.min(100, Math.max(0, percent)) / 100) * meter))}</Text>
       </Text>
     )
     const sections: Section[] = []
@@ -677,11 +761,11 @@ export const register: Register = (on, options) => {
         // The card's border; each window its name, bar and reset, apart.
         rows: 2 + r.rate.reduce((sum, w, i) => sum + (i === 0 ? 0 : 1) + 2 + (rateFacts(w, t).remaining === null ? 0 : 1), 0),
         body: clip => (
-        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="blue" {...held(clip)}>
+        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor={P.cool} {...held(clip)}>
           <Box flexDirection="column" flexShrink={0}>
             {r.rate.map((w, i) => {
               const f = rateFacts(w, t)
-              const burn = Math.abs(f.burn) >= 1 ? [s(' '), num(`${w.kind}-burn`, Math.abs(f.burn), 'int', f.burn > 0 ? 'red' : 'green', f.burn > 0 ? '⇡' : '⇣', '%')] : []
+              const burn = Math.abs(f.burn) >= 1 ? [s(' '), num(`${w.kind}-burn`, Math.abs(f.burn), 'int', f.burn > 0 ? P.bad : P.ok, f.burn > 0 ? '⇡' : '⇣', '%')] : []
               return (
                 <Box key={`window-${w.kind}`} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
                   <Box justifyContent="space-between">
@@ -693,7 +777,7 @@ export const register: Register = (on, options) => {
                       key={`usage-${w.kind}`}
                       module="./bar.tsx"
                       width={meter}
-                      props={{ percent: w.percentUsed, isWorking: false, width: meter, ...(f.pace !== null && { mark: f.pace }) }}
+                      props={{ percent: w.percentUsed, isWorking: false, width: meter, ...(f.pace !== null && { mark: f.pace }), ...barInk() }}
                     />
                   ) : (
                     flat(w.percentUsed, f.color)
@@ -702,7 +786,7 @@ export const register: Register = (on, options) => {
                     <Box justifyContent="space-between">
                       <Text dimColor>{`resets in ${formatDuration(f.remaining)}`}</Text>
                       <Text>
-                        <Text color="white" bold>┃</Text>
+                        <Text color={P.text} bold>┃</Text>
                         <Text dimColor>{` pace ${f.pace}%`}</Text>
                       </Text>
                     </Box>
@@ -727,7 +811,7 @@ export const register: Register = (on, options) => {
     const ticking = (label: string, ms: number) => (
       <Text>
         <Text dimColor>{label}</Text>
-        <Text color="claude">{formatElapsed(ms)}</Text>
+        <Text color={P.accent}>{formatElapsed(ms)}</Text>
       </Text>
     )
     const hasSpeed = first !== null || reply !== null || running !== null
@@ -738,34 +822,34 @@ export const register: Register = (on, options) => {
       // its bar and its parts, apart.
       rows: 3 + (hasSpeed ? 1 : 0) + (bytes === null ? 0 : 1) + (total === null ? 0 : 2 + (parts.length > 0 ? 1 : 0) + parts.length),
       body: clip => (
-      <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="claude" {...held(clip)}>
+      <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor={P.accent} {...held(clip)}>
         <Box flexDirection="column" flexShrink={0}>
           <Box justifyContent="space-between">
-            {figures('session', [num('messages', n, 'int', 'white'), dim(n === 1 ? ' message' : ' messages')])}
+            {figures('session', [num('messages', n, 'int', P.text), dim(n === 1 ? ' message' : ' messages')])}
             {/* The age steps every second: drawn plainly, as a roll would never settle. */}
-            {m && t > 0 && <Text color="white">{formatElapsed(t - m.startedAt)}</Text>}
+            {m && t > 0 && <Text color={P.text}>{formatElapsed(t - m.startedAt)}</Text>}
           </Box>
           {hasSpeed && (
             <Box justifyContent="space-between">
               {/* 10 s and 30 s: across this machine's 895 transcript turns the same
                   wait ran p50 9.4 s, p75 18.9 s, p90 36 s, so red is about the
                   slowest eighth. */}
-              {first === null ? (running === null ? <Text> </Text> : ticking('first output ', running)) : figures('session', [dim('first output '), num('first', first, 'wait', first < 10_000 ? 'green' : first < 30_000 ? 'yellow' : 'red')])}
-              {reply !== null ? figures('session', [dim('reply '), num('reply', reply, 'wait', 'white')]) : first !== null && running !== null && ticking('reply ', running)}
+              {first === null ? (running === null ? <Text> </Text> : ticking('first output ', running)) : figures('session', [dim('first output '), num('first', first, 'wait', first < 10_000 ? P.ok : first < 30_000 ? P.warn : P.bad)])}
+              {reply !== null ? figures('session', [dim('reply '), num('reply', reply, 'wait', P.text)]) : first !== null && running !== null && ticking('reply ', running)}
             </Box>
           )}
           {bytes !== null && (
             <Box justifyContent="space-between">
               <Text dimColor>transcript</Text>
-              <Text color="white">{formatBytes(bytes)}</Text>
+              <Text color={P.text}>{formatBytes(bytes)}</Text>
             </Box>
           )}
           {total !== null && (
             <Box flexDirection="column" marginTop={1}>
-              {figures('cost', [{ ...num('total', total, 'usd', total > 0.5 ? 'yellow' : 'green'), b: true }])}
+              {figures('cost', [{ ...num('total', total, 'usd', total > 0.5 ? P.warn : P.ok), b: true }])}
               {parts.length > 0 &&
                 (Client ? (
-                  <Client key="cost-split" module="./split.tsx" width={meter} props={{ parts: parts.map(part => ({ key: part.label, usd: part.usd, color: part.color })), width: meter }} />
+                  <Client key="cost-split" module="./split.tsx" width={meter} props={{ parts: parts.map(part => ({ key: part.label, usd: part.usd, color: part.color })), width: meter, track: P.track }} />
                 ) : (
                   <Box key="cost-split">
                     <Text>
@@ -777,7 +861,7 @@ export const register: Register = (on, options) => {
                 ))}
               {parts.map(part => (
                 <Box justifyContent="space-between">
-                  {figures('cost', [s('● ', part.color), dim(part.label.padEnd(12)), num(part.label, part.usd, 'usd', 'white')])}
+                  {figures('cost', [s('● ', part.color), dim(part.label.padEnd(12)), num(part.label, part.usd, 'usd', P.text)])}
                   {figures('cost', [num(`${part.label}-share`, Math.round((part.usd / total) * 100), 'int', part.color, '', '%')])}
                 </Box>
               ))}
@@ -807,26 +891,26 @@ export const register: Register = (on, options) => {
         summary: isWarm ? `● warm · ${formatElapsed(left)} left` : '○ cold',
         // The card's border, warm or cold, the bar, the next message's two prices.
         rows: 3 + (isWarm ? 1 : 0) + (reread !== null && rewrite !== null && tokens !== null ? 2 : 0),
-        tint: isWarm ? 'green' : 'gray',
+        tint: isWarm ? P.ok : P.muted,
         body: clip => (
-        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor={isWarm ? 'green' : 'gray'} {...held(clip)}>
+        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor={isWarm ? P.ok : P.muted} {...held(clip)}>
           <Box flexDirection="column" flexShrink={0}>
             <Box justifyContent="space-between">
-              <Text color={isWarm ? 'green' : 'gray'} bold>{isWarm ? '● warm' : '○ cold'}</Text>
-              <Text color="white">{isWarm ? `${formatElapsed(left)} left` : `lasts ${c.ttlMs === HOUR ? '1h' : '5m'} idle`}</Text>
+              <Text color={isWarm ? P.ok : P.muted} bold>{isWarm ? '● warm' : '○ cold'}</Text>
+              <Text color={P.text}>{isWarm ? `${formatElapsed(left)} left` : `lasts ${c.ttlMs === HOUR ? '1h' : '5m'} idle`}</Text>
             </Box>
             {/* Refilled by each message, gliding back up as the context bar does. */}
             {isWarm &&
               (Client ? (
-                <Client key="cache-left" module="./bar.tsx" width={meter} props={{ percent: (left / c.ttlMs) * 100, isWorking: false, width: meter, color: left < c.ttlMs / 5 ? 'yellow' : 'green' }} />
+                <Client key="cache-left" module="./bar.tsx" width={meter} props={{ percent: (left / c.ttlMs) * 100, isWorking: false, width: meter, color: left < c.ttlMs / 5 ? P.warn : P.ok, ...barInk() }} />
               ) : (
-                flat((left / c.ttlMs) * 100, left < c.ttlMs / 5 ? 'yellow' : 'green')
+                flat((left / c.ttlMs) * 100, left < c.ttlMs / 5 ? P.warn : P.ok)
               ))}
             {reread !== null &&
               rewrite !== null &&
               tokens !== null && [
-                line('cache', ['next', [num('next', isWarm ? reread : rewrite, 'usd', isWarm ? 'green' : 'yellow'), dim(isWarm ? ' to read ' : ' to rewrite '), num('tokens', tokens, 'tokens', 'white')]]),
-                line('cache', [isWarm ? 'if cold' : 'if warm', [num('other', isWarm ? rewrite : reread, 'usd', 'gray'), dim(isWarm ? ' to rewrite' : ' to read')]]),
+                line('cache', ['next', [num('next', isWarm ? reread : rewrite, 'usd', isWarm ? P.ok : P.warn), dim(isWarm ? ' to read ' : ' to rewrite '), num('tokens', tokens, 'tokens', P.text)]]),
+                line('cache', [isWarm ? 'if cold' : 'if warm', [num('other', isWarm ? rewrite : reread, 'usd', P.muted), dim(isWarm ? ' to rewrite' : ' to read')]]),
               ]}
           </Box>
         </Box>
@@ -842,19 +926,19 @@ export const register: Register = (on, options) => {
         // The card's border, the model and calls, its rows, the share's bar.
         rows: 3 + advisorRows(adv, share).length + (share === null ? 0 : 1),
         body: clip => (
-        <Box flexDirection="column" paddingX={1} borderStyle="double" borderColor="magenta" {...held(clip)}>
+        <Box flexDirection="column" paddingX={1} borderStyle="double" borderColor={P.alt} {...held(clip)}>
           <Box flexDirection="column" flexShrink={0}>
             <Box justifyContent="space-between">
-              <Text color="magenta" bold>{`✶ ${prettify(adv.model)}`}</Text>
-              {figures('advisor', [num('calls', adv.calls, 'int', 'white'), dim(adv.calls === 1 ? ' call' : ' calls')])}
+              <Text color={P.alt} bold>{`✶ ${prettify(adv.model)}`}</Text>
+              {figures('advisor', [num('calls', adv.calls, 'int', P.text), dim(adv.calls === 1 ? ' call' : ' calls')])}
             </Box>
             {advisorRows(adv, share).map(row => line('advisor', row))}
             {/* That part as a bar, gliding as the context bar does. */}
             {share !== null &&
               (Client ? (
-                <Client key="advisor-share" module="./bar.tsx" width={meter} props={{ percent: share, isWorking: false, width: meter }} />
+                <Client key="advisor-share" module="./bar.tsx" width={meter} props={{ percent: share, isWorking: false, width: meter, ...barInk() }} />
               ) : (
-                flat(share, 'magenta')
+                flat(share, P.alt)
               ))}
           </Box>
         </Box>
@@ -870,7 +954,7 @@ export const register: Register = (on, options) => {
       // The empty line; else each card's border, state, description and rows,
       // the cards a row apart.
       rows: shown.length === 0 ? 1 : shown.reduce((sum, a, i) => sum + (i === 0 ? 0 : 1) + 4 + agentRows(a).length, 0),
-      tint: working > 0 ? 'claude' : 'gray',
+      tint: working > 0 ? P.accent : P.muted,
       body: () => (
       <Box flexDirection="column">
         {shown.length === 0 && <Text dimColor>No agents in this session yet.</Text>}
@@ -881,7 +965,7 @@ export const register: Register = (on, options) => {
             marginTop={i === 0 ? 0 : 1}
             paddingX={1}
             borderStyle="round"
-            borderColor={a.doneAt === null ? 'claude' : a.status === 'completed' ? 'green' : 'red'}
+            borderColor={a.doneAt === null ? P.accent : a.status === 'completed' ? P.ok : P.bad}
             borderDimColor={a.status === 'completed'}
           >
             <Box justifyContent="space-between">
@@ -941,7 +1025,7 @@ export const register: Register = (on, options) => {
             <Box marginTop={1} justifyContent="space-between">
               <Text dimColor>{`Claude Code v${m.version}`}</Text>
               <Button plain key="version" onPress={() => void openUrl($, CHANGELOG)}>
-                <Text color="gray">changelog ›</Text>
+                <Text color={P.muted}>changelog ›</Text>
               </Button>
             </Box>
           )}
@@ -1008,9 +1092,8 @@ function countProps(span: Span & { n: Count }) {
     ...(span.d && { dimColor: true }),
   }
 }
-const SEP = s(' · ', 'gray')
 
-function join(parts: Span[][], sep: Span = SEP): Span[] {
+function join(parts: Span[][], sep: Span = s(' · ', P.muted)): Span[] {
   return parts.filter(part => part.length > 0).flatMap((part, i) => (i === 0 ? part : [sep, ...part]))
 }
 
@@ -1031,21 +1114,21 @@ function frame(rows: Row[]): Span[][] {
     })
   const max = Math.max(MIN_INNER, ...inners.map(row => row.width))
   const heavy = '━'.repeat(max)
-  const divider = s(`┃ ${'─'.repeat(LABEL_W + 1)}┼${'─'.repeat(Math.max(1, max - (LABEL_W + 4)))} ┃`, 'gray')
+  const divider = s(`┃ ${'─'.repeat(LABEL_W + 1)}┼${'─'.repeat(Math.max(1, max - (LABEL_W + 4)))} ┃`, P.muted)
 
-  const lines: Span[][] = [[s(`┏${heavy}┓`, 'gray')]]
+  const lines: Span[][] = [[s(`┏${heavy}┓`, P.muted)]]
   inners.forEach((row, i) => {
     const previous = inners[i - 1]
-    if (previous && !row.isTight) lines.push([previous.section === row.section ? divider : s(`┣${heavy}┫`, 'gray')])
-    lines.push([s('┃', 'gray'), ...row.inner, s(' '.repeat(max - row.width)), s('┃', 'gray')])
+    if (previous && !row.isTight) lines.push([previous.section === row.section ? divider : s(`┣${heavy}┫`, P.muted)])
+    lines.push([s('┃', P.muted), ...row.inner, s(' '.repeat(max - row.width)), s('┃', P.muted)])
   })
-  lines.push([s(`┗${heavy}┛`, 'gray')])
+  lines.push([s(`┗${heavy}┛`, P.muted)])
   return lines
 }
 
 // A row's cells inside the frame: its label, the rule, its content.
 function innerOf(row: Row): Span[] {
-  return [s(' '), dim(row.label.padEnd(LABEL_W)), s(' '), s('│', 'gray'), s('  '), ...row.content, s(' ')]
+  return [s(' '), dim(row.label.padEnd(LABEL_W)), s(' '), s('│', P.muted), s('  '), ...row.content, s(' ')]
 }
 
 // The content cells the frame has room for without growing past its rows.
@@ -1093,7 +1176,7 @@ function pickRows(
     else if (widthOf(line) + 1 + widthOf([pill]) <= room) line.push(s(' '), pill)
     else lines.push([pill])
   }
-  const confirm: Span = { t: ' ✓ Confirm ', c: 'green', b: true, el: 'confirm' }
+  const confirm: Span = { t: ' ✓ Confirm ', c: P.ok, b: true, el: 'confirm' }
   const lastLine = lines.length - 1
   const tail = lines[lastLine] ?? []
   const centre = (line: Span[]) => Math.max(0, Math.floor((room - widthOf(line)) / 2))
@@ -1171,21 +1254,21 @@ function isNewer(a: unknown, b: string): boolean {
 
 function pathRow(p: Place | null): Span[] {
   const git = p?.git
-  const path: Span[] = [{ ...s(formatCwd(p?.cwd ?? '', p?.home ?? null), 'cyan'), el: p?.remote ? 'repo' : undefined }]
+  const path: Span[] = [{ ...s(formatCwd(p?.cwd ?? '', p?.home ?? null), P.info), el: p?.remote ? 'repo' : undefined }]
   // A press opens the panel, or closes it while it is open.
   const panel: Span[] = [{ ...dim(`SIDEBAR ${SIDEBAR_TURN[0]}`), el: 'panel' }]
   if (!git) return join([path, panel])
   const isDirty = git.insertions > 0 || git.deletions > 0 || git.untracked > 0
   const counts = [
-    git.ahead > 0 && s(` ↑${git.ahead}`, 'cyan'),
-    git.behind > 0 && s(` ↓${git.behind}`, 'magenta'),
-    git.insertions > 0 && s(` +${git.insertions}`, 'green'),
-    git.deletions > 0 && s(` -${git.deletions}`, 'red'),
-    git.untracked > 0 && s(` ~${git.untracked}`, 'gray'),
+    git.ahead > 0 && s(` ↑${git.ahead}`, P.info),
+    git.behind > 0 && s(` ↓${git.behind}`, P.alt),
+    git.insertions > 0 && s(` +${git.insertions}`, P.ok),
+    git.deletions > 0 && s(` -${git.deletions}`, P.bad),
+    git.untracked > 0 && s(` ~${git.untracked}`, P.muted),
     // The space is deliberate: ⊟ is drawn edge to edge and swallows a digit.
     git.stash > 0 && dim(` ⊟ ${git.stash}`),
   ].filter((span): span is Span => span !== false)
-  return join([path, [dim('on'), s(' '), s(git.branch, isDirty ? 'yellow' : 'green'), ...counts], panel])
+  return join([path, [dim('on'), s(' '), s(git.branch, isDirty ? P.warn : P.ok), ...counts], panel])
 }
 
 // Folds a panel section or opens it again, and keeps the choice for the
@@ -1370,7 +1453,7 @@ async function openPanel($: $): Promise<boolean> {
 function modelRow(r: Reading | null, m: { model: string; effort: string | null; version: string } | null, isWorking: boolean): Span[] {
   // The bar fills from the truncated percentage, the label shows the rounded one.
   const pct = r?.percent ?? 0
-  const color = r?.percent == null ? 'green' : pctColor(pct)
+  const color = r?.percent == null ? P.ok : pctColor(pct)
   const filled = Math.floor((BAR_WIDTH * Math.min(100, Math.max(0, Math.trunc(pct))) + 50) / 100)
   const used = r?.tokens ?? Math.floor(((r?.window ?? 0) * pct) / 100)
   // Its parts stand apart on space alone: the chips' colours and chevrons
@@ -1378,9 +1461,9 @@ function modelRow(r: Reading | null, m: { model: string; effort: string | null; 
   return join([
     // Drawn by bar.tsx, which animates it; the text holds its width.
     [{ t: '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled), c: color, el: 'bar' }, s(' '), num('pct', pct, 'int', color, '', '%')],
-    r && r.window > 0 ? [num('used', used, 'tokens', 'white'), s(`/${windowLabel(r.window)}`, 'gray')] : [],
+    r && r.window > 0 ? [num('used', used, 'tokens', P.text), s(`/${windowLabel(r.window)}`, P.muted)] : [],
     // In the colour the model picker gives it.
-    [{ ...s(`${m?.model ? prettify(m.model) : 'unknown'} ${MENU_TURN[0]}`, m?.model ? modelColor(aliasOf(m.model) ?? '') : 'gray'), el: 'model' }],
+    [{ ...s(`${m?.model ? prettify(m.model) : 'unknown'} ${MENU_TURN[0]}`, m?.model ? modelColor(aliasOf(m.model) ?? '') : P.muted), el: 'model' }],
     m?.effort ? [{ ...s(`${m.effort} effort ${MENU_TURN[0]}`, effortColor(m.effort)), el: 'effort', v: m.effort }] : [],
     // Drawn by claude.tsx: the spark and `Working`, or `✓ Ready`.
     [{ t: isWorking ? WORKING : '✓ Ready', el: 'claude' }],
@@ -1390,17 +1473,17 @@ function modelRow(r: Reading | null, m: { model: string; effort: string | null; 
 // The four buckets, each with the latest turn's share.
 function tokensRow(tot: Tokens, delta: Tokens): Span[] {
   return join([
-    bucket('in', 'in', '', tot.in, delta.in, 'cyan', 'cyan'),
-    bucket('cacheWrite', 'cache', '↑', tot.cacheWrite, delta.cacheWrite, 'gray', 'yellow'),
-    bucket('cacheRead', 'cache', '↓', tot.cacheRead, delta.cacheRead, 'gray', 'cyan'),
-    bucket('out', 'out', '', tot.out, delta.out, 'magenta', 'magenta'),
+    bucket('in', 'in', '', tot.in, delta.in, P.info, P.info),
+    bucket('cacheWrite', 'cache', '↑', tot.cacheWrite, delta.cacheWrite, P.muted, P.warn),
+    bucket('cacheRead', 'cache', '↓', tot.cacheRead, delta.cacheRead, P.muted, P.info),
+    bucket('out', 'out', '', tot.out, delta.out, P.alt, P.alt),
   ])
 }
 
 // One token bucket: `in 2.7K (+2.7K)`, bold and coloured while it is moving.
 function bucket(key: string, label: string, arrow: string, value: number, plus: number, idle: string, active: string): Span[] {
-  const arrowPart = arrow ? [s(arrow, 'gray')] : []
-  const added = num(`${key}-delta`, plus, 'tokens', plus > 0 ? 'green' : undefined, '(+', ')')
+  const arrowPart = arrow ? [s(arrow, P.muted)] : []
+  const added = num(`${key}-delta`, plus, 'tokens', plus > 0 ? P.ok : undefined, '(+', ')')
   return plus > 0
     ? [{ t: label, c: active, b: true }, ...arrowPart, s(' '), num(key, value, 'tokens', active), s(' '), added]
     : [dim(label), ...arrowPart, s(' '), num(key, value, 'tokens', idle), s(' '), { ...added, d: true }]
@@ -1411,21 +1494,21 @@ function bucket(key: string, label: string, arrow: string, value: number, plus: 
 // agent list shows), and cost.
 function agentRows(a: Agent): [string, Span[]][] {
   const rows: [string, Span[]][] = []
-  if (a.model) rows.push(['model', join([[s(prettify(a.model), 'magenta')], a.effort ? [s(a.effort, effortColor(a.effort))] : []])])
+  if (a.model) rows.push(['model', join([[s(prettify(a.model), P.alt)], a.effort ? [s(a.effort, effortColor(a.effort))] : []])])
   if (a.context + a.out > 0) {
-    rows.push(['tokens', join([[num('context', a.context, 'tokens', 'cyan'), dim(' context')], [num('out', a.out, 'tokens', 'magenta'), dim(' out')]])])
+    rows.push(['tokens', join([[num('context', a.context, 'tokens', P.info), dim(' context')], [num('out', a.out, 'tokens', P.alt), dim(' out')]])])
   }
-  if (a.usd > 0) rows.push(['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? 'yellow' : 'green')]])
+  if (a.usd > 0) rows.push(['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? P.warn : P.ok)]])
   return rows
 }
 
 // The advisor card's rows: its tokens, and its dollars, already inside the
 // session's total (Claude Code's own), with the part of that total they are.
 function advisorRows(a: Advisor, share: number | null): [string, Span[]][] {
-  const rows: [string, Span[]][] = [['tokens', join([[num('in', a.in, 'tokens', 'cyan'), dim(' in')], [num('out', a.out, 'tokens', 'magenta'), dim(' out')]])]]
+  const rows: [string, Span[]][] = [['tokens', join([[num('in', a.in, 'tokens', P.info), dim(' in')], [num('out', a.out, 'tokens', P.alt), dim(' out')]])]]
   if (a.usd !== null) {
-    const part = share === null ? [] : [dim(' · '), num('share', share, 'int', 'magenta', '', '%'), dim(' of session')]
-    rows.push(['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? 'yellow' : 'green'), ...part]])
+    const part = share === null ? [] : [dim(' · '), num('share', share, 'int', P.alt, '', '%'), dim(' of session')]
+    rows.push(['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? P.warn : P.ok), ...part]])
   }
   return rows
 }
@@ -1452,11 +1535,11 @@ function costParts(x: Spend, total: number, advisor: number): { label: string; u
   const adv = Math.min(Math.max(0, advisor), x.main + earlier)
   const fromMain = Math.min(x.main, adv)
   return [
-    { label: 'main', usd: x.main - fromMain, color: 'claude' },
-    { label: 'advisor', usd: adv, color: 'magenta' },
-    { label: 'agents', usd: x.agents, color: 'cyan' },
-    { label: 'background', usd: x.background, color: 'blue' },
-    { label: 'earlier', usd: earlier - (adv - fromMain), color: 'gray' },
+    { label: 'main', usd: x.main - fromMain, color: P.accent },
+    { label: 'advisor', usd: adv, color: P.alt },
+    { label: 'agents', usd: x.agents, color: P.info },
+    { label: 'background', usd: x.background, color: P.cool },
+    { label: 'earlier', usd: earlier - (adv - fromMain), color: P.muted },
   ].filter(part => part.usd >= 0.00005)
 }
 
@@ -1471,7 +1554,7 @@ function rateFacts(w: RateWindow, t: number) {
   return {
     name,
     pct,
-    color: pct >= 80 ? 'red' : pct >= 50 ? 'yellow' : 'green',
+    color: pct >= 80 ? P.bad : pct >= 50 ? P.warn : P.ok,
     pace,
     burn: pace === null ? 0 : pct - pace,
     remaining: isInWindow ? remaining : null,
@@ -1664,6 +1747,34 @@ function remember<V>(waiting: Map<string, V>, key: string, value: V): void {
 // model and effort, the place, the agents, the prices, the folded sections
 // and what the transcript holds. Run as the plugin starts and again as the
 // process goes on under another session.
+// The skin and the lightness of Claude Code's theme, and the toggles, from
+// /config as it stands: a toggle's row beats the options the module loaded
+// with, which a change made in the menu may not have reloaded.
+async function seedSkin($: $, options: Record<string, unknown>): Promise<void> {
+  const rows = await $.config.list().catch(() => [])
+  const row = (key: string) => rows.find(x => x.key === key)?.value
+  const theme = row('theme')
+  await update($, skin, () => skinOfTheme(theme)?.skin ?? 'classic')
+  await update($, isLight, () => isLightTheme(theme))
+  await update($, chatSkinned, () => (row('statusbox.chatSkin') ?? options.chatSkin) !== false)
+  await update($, grounded, () => (row('statusbox.terminalBackground') ?? options.terminalBackground) !== false)
+}
+
+// Sets the palette this drawing paints in from the skin and the theme, and
+// says which skin: every render hook calls it first, which is also what
+// redraws it when either changes.
+async function paint($: $): Promise<string> {
+  const [name, light] = await Promise.all([read($, skin), read($, isLight)])
+  P = paletteOf(name, light)
+  return name
+}
+
+// Whether the chat history is the skin's to draw: a skin other than classic,
+// and the /config toggle on.
+async function isChatSkinned($: $): Promise<boolean> {
+  return (await read($, chatSkinned)) && (await paint($)) !== 'classic'
+}
+
 async function seedSession($: $): Promise<void> {
   const [usage, model, version, settings, n, t, id] = await Promise.all([
     $.session.usage(),
@@ -2037,28 +2148,28 @@ function windowLabel(size: number): string {
 }
 
 function pctColor(pct: number): string {
-  return pct >= 85 ? 'red' : pct >= 60 ? 'yellow' : 'green'
+  return pct >= 85 ? P.bad : pct >= 60 ? P.warn : P.ok
 }
+
+// An effort level's colour in the skin, medium's for one it does not name.
+const effortOf = (level: string) => P.efforts[level.toLowerCase() as keyof Palette['efforts']] ?? P.efforts.medium
 
 function effortColor(level: string): string {
-  const colors: Record<string, string> = { low: 'gray', high: 'cyan', xhigh: 'yellow', max: 'red' }
-  return colors[level.toLowerCase()] ?? 'white'
+  return effortOf(level).color
 }
 
-// The hex an effort colour's glow washes toward white, its theme colour being
-// a name: VS Code's own dark theme's, near most terminals'.
+// The hex an effort colour's glow washes toward white from, where its colour
+// is a name.
 function effortShine(level: string): string {
-  const hexes: Record<string, string> = { gray: '#666666', cyan: '#11a8cd', yellow: '#e5e510', red: '#cd3131' }
-  return hexes[effortColor(level)] ?? '#e5e5e5'
+  return effortOf(level).shine
 }
 
 // A model's colour in the picker, by its family (`opus[1m]` is Opus's): hex,
 // for pill.tsx's sweep to wash toward white, and none an effort level takes.
-// The default and anything newer are a pale slate.
+// The default and anything newer take the skin's `other`.
 function modelColor(alias: string): string {
-  const colors: Record<string, string> = { opus: '#d77757', sonnet: '#5f9cf5', haiku: '#5fbf8f', fable: '#b48cf2' }
-  const family = /^(opus|sonnet|haiku|fable)/.exec(alias.toLowerCase())?.[1]
-  return (family && colors[family]) || '#a9afc2'
+  const family = /^(opus|sonnet|haiku|fable)/.exec(alias.toLowerCase())?.[1] as keyof Palette['models'] | undefined
+  return (family && P.models[family]) || P.models.other
 }
 
 // `claude-opus-5-5[1m]` -> `Opus 5.5`; `Opus 5.5 (1M context)` -> `Opus 5.5`.

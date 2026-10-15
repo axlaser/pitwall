@@ -1,5 +1,8 @@
-import type { AgentStatus, On, PromptEditInput } from 'claude-code'
+import type { AgentStatus, ConfigValue, On, PromptEditInput } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+import { shortPath } from '../hooks/history'
+import { SKINS, themeOf } from '../hooks/skin'
 
 // The engine's own answers, which the kit leaves to the test.
 // `opened` collects each pane open's `focus`; the store it keeps is returned.
@@ -78,6 +81,54 @@ const PANE = {
   scroll: { offset: 0, bodyRows: 40 },
   view: {},
 }
+
+// Every colour a skin paints in, its light palette's too, is a hex a sweep or
+// a ramp can blend, but classic's names, which follow the terminal's theme.
+test('each skin paints in hex, on a dark theme and a light one', () => {
+  const colours = (value: unknown): string[] =>
+    typeof value === 'string'
+      ? [value]
+      : value && typeof value === 'object'
+        ? Object.entries(value).flatMap(([key, v]) => (key === 'name' ? [] : colours(v)))
+        : []
+  const bad = Object.entries(SKINS)
+    .filter(([name]) => name !== 'classic')
+    .flatMap(([name, pair]) => [...colours(pair.dark), ...colours(pair.light)].filter(c => !/^#[0-9a-f]{6}$/.test(c)).map(c => `${name}: ${c}`))
+  expect([Object.keys(SKINS).length, bad]).toEqual([8, []])
+})
+
+// Each skin makes Claude Code's own themes of its palettes, over the base of
+// the same lightness and in hex throughout; classic, whose colours are the
+// theme's, makes none. themes/ ships what this makes (CLAUDE.md says how).
+test('each skin makes a Claude Code theme of each palette', () => {
+  const made = Object.entries(SKINS).map(([name, pair]) => [name, themeOf(pair.dark, false), themeOf(pair.light, true)] as const)
+  const bad = made.flatMap(([name, dark, light]) =>
+    [dark, light].flatMap(theme => Object.entries(theme?.overrides ?? {}).filter(([, c]) => !/^#[0-9a-f]{6}$/.test(c)).map(([key]) => `${name}: ${key}`)),
+  )
+  const shape = made.map(([name, dark, light]) => [name, dark?.base, light?.base, dark?.name, light?.name])
+  expect([shape.slice(0, 3), bad]).toEqual([
+    [
+      ['classic', undefined, undefined, undefined, undefined],
+      ['tokyo-night', 'dark', 'light', 'Tokyo Night', 'Tokyo Day'],
+      ['dracula', 'dark', 'light', 'Dracula', 'Alucard'],
+    ],
+    [],
+  ])
+})
+
+// A row's path is named from the working directory, else from home, and a
+// folder whose name only starts with one is neither.
+test('a tool row shortens a path by either separator', () => {
+  const posix = { cwd: '/home/ana/repo', home: '/home/ana' }
+  expect(shortPath('/home/ana/repo/hooks/a.ts', posix)).toBe('hooks/a.ts')
+  expect(shortPath('/home/ana/notes.md', posix)).toBe('~/notes.md')
+  expect(shortPath('/home/ana/repo-old/a.ts', posix)).toBe('~/repo-old/a.ts')
+  expect(shortPath('/etc/hosts', posix)).toBe('/etc/hosts')
+  const windows = { cwd: 'C:\\Users\\ana\\repo', home: 'C:\\Users\\ana' }
+  expect(shortPath('C:\\Users\\ana\\repo\\hooks\\a.ts', windows)).toBe('hooks\\a.ts')
+  expect(shortPath('C:\\Users\\ana\\notes.md', windows)).toBe('~\\notes.md')
+  expect(shortPath('C:\\Users\\anabel\\a.ts', windows)).toBe('C:\\Users\\anabel\\a.ts')
+})
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the band draws the measured context and the turn's tokens as each request lands`, async ($, on) => {
@@ -1153,6 +1204,258 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await colours(false, 'chip-effort')).toEqual({ all: ['yellow'], chevron: 1, isBold: false })
     const effort = await colours(true, 'chip-effort')
     expect([effort.all.length, effort.all.includes('yellow'), effort.all.includes('#f2f288'), effort.chevron, effort.isBold]).toEqual([5, true, true, 5, false])
+  })
+
+  test(`${surface}: a skin's theme repaints the box and the panel, its light theme in its light palette`, async ($, on) => {
+    engine(on)
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/home/me' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.model', () => ({ value: 'claude-sonnet-6' }))
+    on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+    on('session.cwd', () => ({ value: '/home/me/repo' }))
+    on('session.repo', () => ({ value: null }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('session.root', () => ({ value: '/home/me/repo' }))
+    on('session.id', () => ({ value: 'abc' }))
+    on('settings.read', () => ({ value: { effortLevel: 'xhigh' } }))
+    on('agent.list', () => ({ value: [] }))
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }))
+    // The /config rows as they stand, the theme Tokyo Night's; a change is taken.
+    const engineRow = { label: 'Theme', kind: 'choice' as const, isLocked: false, provider: { plugin: 'engine', tier: 'core' as const } }
+    on('config.list', () => ({ value: [{ key: 'theme', value: 'custom:statusbox:tokyo-night-dark', ...engineRow }] }))
+    on('config.set', ($, e) => ({ value: e.value }))
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    // What the skin paints: Sonnet's chip, xhigh's, Ready's check, and the
+    // session card's border.
+    const inkIn = async (key: string) => (await band.findAll({ type: 'Text', in: key })).find(text => text.props.color)?.props.color
+    const card = async (color: string) => (await pane.findAll({ type: 'Box' })).some(box => box.props.borderColor === color)
+    const shown = async (accent: string) => [
+      await inkIn('chip-model'),
+      await inkIn('chip-effort'),
+      (await band.find({ type: 'Text', text: /^✓$/, in: 'claude' }))?.props.color,
+      await card(accent),
+    ]
+
+    // Tokyo Night's night palette.
+    expect(await shown('#7aa2f7')).toEqual(['#7aa2f7', '#e0af68', '#9ece6a', true])
+    // Its day theme picked in /theme swaps in the day palette.
+    const person = { origin: { kind: 'composer' as const } }
+    const pick = (value: string, previous: string) => $.config.set({ key: 'theme', value, previous, provider: engineRow.provider, ...person })
+    await pick('custom:statusbox:tokyo-night-light', 'custom:statusbox:tokyo-night-dark')
+    await clock.advance(0)
+    expect(await shown('#2e7de9')).toEqual(['#2e7de9', '#8c6c3e', '#587539', true])
+    // Any other theme repaints in the colours statusbox has always drawn in,
+    // the terminal theme's own.
+    await pick('dark', 'custom:statusbox:tokyo-night-light')
+    await clock.advance(0)
+    expect(await shown('claude')).toEqual(['#5f9cf5', 'yellow', 'green', true])
+  })
+
+  // A session on the theme given, the box drawn. The /config rows are held
+  // here as the menu keeps them, each change taken, and each write to the
+  // terminal is recorded with the device it went to.
+  const themed = async ($: Engine, on: On, theme: string) => {
+    engine(on)
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/home/me' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.model', () => ({ value: 'claude-sonnet-6' }))
+    on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+    on('session.cwd', () => ({ value: '/home/me/repo' }))
+    on('session.repo', () => ({ value: null }))
+    on('session.root', () => ({ value: '/home/me/repo' }))
+    on('session.id', () => ({ value: 'abc' }))
+    on('settings.read', () => ({ value: {} }))
+    on('agent.list', () => ({ value: [] }))
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }))
+    const writes: [string | undefined, string | undefined][] = []
+    on('process.run', ($, e) => {
+      const isWrite = e.argv[0] === '/bin/sh'
+      if (isWrite) writes.push([e.init?.env?.STATUSBOX_OSC, e.init?.env?.STATUSBOX_TTY])
+      return { value: { exitCode: isWrite ? 0 : 1, stdout: isWrite ? '/dev/ttys009' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    const rows = new Map<string, ConfigValue>([['theme', theme]])
+    const engineRow = { label: 'Theme', kind: 'choice' as const, isLocked: false, provider: { plugin: 'engine', tier: 'core' as const } }
+    on('config.list', () => ({ value: [...rows].map(([key, value]) => ({ key, value, ...engineRow })) }))
+    on('config.set', ($, e) => (rows.set(e.key, e.value), { value: e.value }))
+    on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    await clock.advance(0)
+    // A /config row changed as the person changes it in the menu, and time
+    // for the drawing, and a write to the terminal, to follow.
+    const change = async (key: string, value: ConfigValue, previous: ConfigValue) => {
+      const provider = key.startsWith('statusbox.') ? { plugin: 'statusbox', tier: 'user' as const } : engineRow.provider
+      await $.config.set({ key, value, previous, provider, origin: { kind: 'composer' as const } })
+      await clock.advance(1000)
+    }
+    return { clock, band, writes, change }
+  }
+
+  test(`${surface}: a skin's own theme picked in /theme repaints the box in that skin`, async ($, on) => {
+    const { band, change } = await themed($, on, 'dark')
+    const sonnet = async () => (await band.findAll({ type: 'Text', in: 'chip-model' })).find(text => text.props.color)?.props.color
+    await change('theme', 'custom:statusbox:nord-light', 'dark')
+    const nord = await sonnet()
+    // Another theme gives the box classic.
+    await change('theme', 'dark', 'custom:statusbox:nord-light')
+    expect([nord, await sonnet()]).toEqual(['#5e81ac', '#5f9cf5'])
+  })
+
+  // On the terminal the skin paints the background behind everything, one
+  // write for each colour asked for: the night's, the day's on a light theme,
+  // the terminal's own with the toggle off and as the session leaves the
+  // process; none for a /clear, which goes on in it.
+  test(`${surface}: a skin paints the terminal's background, and leaving puts the terminal's own back`, async ($, on) => {
+    const { clock, writes, change } = await themed($, on, 'custom:statusbox:tokyo-night-dark')
+    await clock.advance(1000)
+    await change('theme', 'custom:statusbox:tokyo-night-light', 'custom:statusbox:tokyo-night-dark')
+    await change('statusbox.terminalBackground', false, true)
+    await change('statusbox.terminalBackground', true, false)
+    await $.session.end({ reason: 'clear', sessionId: 'abc', resume: { id: 'abc' } })
+    const cleared = writes.length
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'abc', resume: { id: 'abc' } })
+    const tty = '/dev/ttys009'
+    expect([cleared, writes]).toEqual(
+      surface === 'terminal' ? [4, [['11;#1a1b26', ''], ['11;#e1e2e7', tty], ['111', tty], ['11;#e1e2e7', tty], ['111', tty]]] : [0, []],
+    )
+  })
+
+  // A write waits for the redraw a theme switch makes to pass, so as not to
+  // land inside its frame; a colour replaced while it waits is never written.
+  test(`${surface}: a background write waits out the redraw, and only the last colour asked for is written`, async ($, on) => {
+    const { clock, writes } = await themed($, on, 'custom:statusbox:tokyo-night-dark')
+    await clock.advance(1000)
+    const engineRow = { plugin: 'engine', tier: 'core' as const }
+    const pick = (value: string, previous: string) => $.config.set({ key: 'theme', value, previous, provider: engineRow, origin: { kind: 'composer' as const } })
+    await pick('custom:statusbox:nord-dark', 'custom:statusbox:tokyo-night-dark')
+    await clock.advance(30)
+    await pick('custom:statusbox:dracula-dark', 'custom:statusbox:nord-dark')
+    await clock.advance(30)
+    const waiting = writes.length
+    await clock.advance(1000)
+    expect([waiting, writes.map(([osc]) => osc)]).toEqual(surface === 'terminal' ? [1, ['11;#1a1b26', '11;#282a36']] : [0, []])
+  })
+
+  test(`${surface}: classic leaves the terminal's background alone`, async ($, on) => {
+    const { clock, writes } = await themed($, on, 'dark')
+    await clock.advance(1000)
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'abc', resume: { id: 'abc' } })
+    expect(writes).toEqual([])
+  })
+
+  // A session on the theme given, Tokyo Night's unless named, its repo at
+  // /home/me/repo.
+  const skinned = async ($: Engine, on: On, theme = 'custom:statusbox:tokyo-night-dark') => {
+    engine(on)
+    on('config.list', () => ({ value: [{ key: 'theme', value: theme, label: 'Theme', kind: 'choice' as const, isLocked: false, provider: { plugin: 'engine', tier: 'core' as const } }] }))
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/home/me' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.model', () => ({ value: 'claude-sonnet-6' }))
+    on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+    on('session.cwd', () => ({ value: '/home/me/repo' }))
+    on('session.repo', () => ({ value: null }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('session.root', () => ({ value: '/home/me/repo' }))
+    on('session.id', () => ({ value: 'abc' }))
+    on('settings.read', () => ({ value: {} }))
+    on('agent.list', () => ({ value: [] }))
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }))
+    // A Bash call takes 1.2 s.
+    on('tool.call', async ($, e) => (e.tool === 'Bash' && (await clock.advance(1200)), { result: { stdout: '', stderr: '', interrupted: false } as never }))
+    // Claude Code's own drawing of a row the plugin leaves to it.
+    on('ui.render', () => ({ type: 'engine' as const, ref: 0 }))
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    return clock
+  }
+  const row = (tool: string, input: unknown, id = 'toolu_1') => ({
+    tool_use_id: id,
+    tool,
+    input,
+    isRunning: false,
+    isErrored: false,
+    isInterrupted: false,
+  })
+
+  test(`${surface}: a skinned chat draws a tool call's row in its kind's colour, with its edit and its time`, async ($, on) => {
+    await skinned($, on)
+    const mount = (props: ReturnType<typeof row>) => $.ui.mount({ plugin: 'statusbox', surface, component: 'ToolUse', requestId: props.tool_use_id, props })
+    const textIn = async (ui: Awaited<ReturnType<typeof mount>>) => (await ui.findAll({ type: 'Text' })).filter(t => t.props.color).map(t => `${t.text}:${t.props.color}`)
+    // An Edit: its name in the edit kind's colour, its file from the repo, the
+    // lines it adds and takes away.
+    const edit = await mount(row('Edit', { file_path: '/home/me/repo/src/a.ts', old_string: 'a\nb', new_string: 'a\nb\nc' }))
+    // A Bash call, timed as it ran; one from before the plugin saw it, untimed.
+    await $.tool.call({ tool: 'Bash', command: 'npm test\nmore', tool_use_id: 'toolu_bash' } as never)
+    const bash = await mount(row('Bash', { command: 'npm test\nmore' }, 'toolu_bash'))
+    const old = await mount(row('Read', { file_path: '/home/me/notes.md' }, 'toolu_old'))
+    if (surface === 'desktop') {
+      // Claude Code draws its own rows on the desktop.
+      expect([await edit.find({ key: 'tool-row' }), await bash.find({ key: 'tool-row' })]).toEqual([undefined, undefined])
+      return
+    }
+    expect(await textIn(edit)).toEqual(['●:#9ece6a', 'Edit:#9ece6a', 'src/a.ts:#c0caf5', '+3:#9ece6a', '-2:#f7768e'])
+    expect(await textIn(bash)).toEqual(['●:#7aa2f7', 'Bash:#7aa2f7', 'npm test:#c0caf5', '1.2s:#565f89'])
+    expect(await textIn(old)).toEqual(['●:#7dcfff', 'Read:#7dcfff', '~/notes.md:#c0caf5'])
+    // Running it is hollow and says so; failed, a cross in the skin's red.
+    const running = await mount({ ...row('Grep', { pattern: 'TODO', path: '/home/me/repo/src' }, 'toolu_run'), isRunning: true })
+    const failed = await mount({ ...row('WebFetch', { url: 'https://example.com' }, 'toolu_bad'), isErrored: true })
+    expect([await textIn(running), (await textIn(failed))[0]]).toEqual([['○:#7dcfff', 'Grep:#7dcfff', 'TODO in src:#c0caf5', 'running…:#565f89'], '✗:#f7768e'])
+  })
+
+  test(`${surface}: classic, or the toggle off, leaves the chat to Claude Code`, async ($, on) => {
+    await skinned($, on, 'dark')
+    const tool = await $.ui.mount({ plugin: 'statusbox', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
+    expect(await tool.find({ key: 'tool-row' })).toBeUndefined()
+  })
+
+  test(`${surface}: a skin with its chat toggle off leaves the chat to Claude Code`, { options: { chatSkin: false } }, async ($, on) => {
+    await skinned($, on)
+    const tool = await $.ui.mount({ plugin: 'statusbox', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
+    const prompt = await $.ui.mount({ plugin: 'statusbox', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'hi', origin: { kind: 'composer' }, isExpanded: true } })
+    expect([await tool.find({ key: 'tool-row' }), await prompt.find({ key: 'prompt-row' })]).toEqual([undefined, undefined])
+  })
+
+  test(`${surface}: a skinned chat outlines the person's prompt and draws a reply's tables as cards`, async ($, on) => {
+    await skinned($, on)
+    const prompt = await $.ui.mount({ plugin: 'statusbox', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'fix the bar', origin: { kind: 'composer' }, isExpanded: true } })
+    const notice = await $.ui.mount({
+      plugin: 'statusbox',
+      surface,
+      component: 'UserMessage',
+      requestId: 'm2',
+      props: { text: 'task done', origin: { kind: 'task-notification' }, isExpanded: true },
+    })
+    // One table, then a fenced block whose lines only look like one.
+    const text = ['Two runs:', '', '| run | ms |', '|-----|---:|', '| **a** | 12 |', '| b | 340 |', '', 'And the raw form:', '```', '| x | y |', '|---|---|', '```'].join('\n')
+    const reply = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AssistantMessage', requestId: 'r1', props: { text, isFirstOfReply: true } })
+    if (surface === 'desktop') {
+      expect([await prompt.find({ key: 'prompt-row' }), await reply.find({ key: 'reply' })]).toEqual([undefined, undefined])
+      return
+    }
+    // The prompt in a rounded outline, its mark in the accent; a notification
+    // the person did not type is Claude Code's to draw.
+    const outline = await prompt.find({ key: 'prompt-row' })
+    expect([outline?.props.borderStyle, outline?.text, await notice.find({ key: 'prompt-row' })]).toEqual(['round', '❯ fix the bar', undefined])
+    // The reply opens on the accent's bullet; its text as Claude Code draws
+    // markdown, either side of the one card, the fence left as code.
+    const markdown = (await reply.findAll({ type: 'Markdown' })).map(m => m.props.text)
+    expect([(await reply.find({ type: 'Text', text: /^●$/ }))?.props.color, markdown]).toEqual(['#7aa2f7', ['Two runs:', 'And the raw form:\n```\n| x | y |\n|---|---|\n```']])
+    // The card: its header in the accent, its rows banded, `ms` to the right,
+    // the markup dropped from `a`.
+    const card = await reply.find({ key: 'table-1' })
+    const bands = [await reply.find({ key: 'table-1-row-0' }), await reply.find({ key: 'table-1-row-1' })].map(r => r?.props.backgroundColor)
+    const head = (await reply.findAll({ type: 'Text', text: /^(run|ms)$/ })).map(t => t.props.color)
+    expect([card?.props.borderStyle, bands, head, (await reply.find({ type: 'Text', text: /^a$/ }))?.text]).toEqual(['round', [undefined, '#3b4261'], ['#7aa2f7', '#7aa2f7'], 'a'])
   })
 
   test(`${surface}: the advisor's card takes a call as soon as the response that made it is whole`, async ($, on) => {

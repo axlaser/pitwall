@@ -10,6 +10,10 @@ A Claude Code plugin made of function hooks: a live status box above the prompt,
 hooks/hooks.json                 names the one hooks module
 hooks/register.tsx               the hooks module: every event hook, the box (AbovePrompt) and the panel (Pane)
 hooks/notify.ts                  alert sounds: one child process per alert, per OS
+hooks/skin.ts                    the palette (every colour the box and the panel paint in, by what it means) and the skins that fill it
+hooks/history.tsx                the chat history in a skin's colours: a tool call's row, the person's prompt, a reply block and its tables as cards
+hooks/ground.ts                  the terminal's own background in the skin's: OSC 11 to Claude Code's terminal device, OSC 111 to put it back
+themes/                          each skin's Claude Code themes, <skin>-<dark|light>.json, made from skin.ts (see Development)
 hooks/bar.tsx, claude.tsx, count.tsx, fold.tsx, split.tsx, chevron.tsx, chip.tsx, pill.tsx, wire.tsx   Client modules the terminal runs locally (the bars, the working animation, the rolling figures, the panel's folding headers, the cost split, the sidebar chip's chevron, the model and effort chips (words and chevron, one glow over both), the picker's choices, the picker's wire; count.tsx also holds the number formatters, split.tsx `apportion`)
 types/index.d.ts                 the $.state contract: every value the module keeps, declared under PluginState
 tests/statusbox.test.ts          the one test file, run by `claude plugin test .`
@@ -34,6 +38,9 @@ Where each figure comes from:
 - **Model picker:** the choices are `$.config.list()`'s `model` row, named from the `main` rows of the model catalog Claude Code caches in `cache/model-catalog/` (read when the picker opens); a pick is `$.config.set({ key: 'model' })`, as `/config` sets it. The effort picker's pick rides each request through `turn.step`.
 - **Folded panel sections:** the `folded` atom, kept in `$.store` too and read back at `session.start`.
 - **Folds in motion:** the `motion` atom, the box's picker (`menu`) or a panel section's body (`fold-<NAME>`) a row nearer open or shut, the room a picker's row makes for its confirm (`menu-room`) a cell, and the panel's contents (`panel`) a step nearer in from its right edge or out, an edge of the panel's own riding their left side since Claude Code's dock edge cannot move (`$.ui.close` once they are out, before the motion is dropped), each 24 ms beat of a ticker that runs only while one moves. The motion is written before the atom it animates (`menu`, `folded`): each write redraws, and the other order draws one frame of the end state first. A picker's wire and pills move on the terminal's clock; folding, they go out for `CLOSE_MS` before its rows roll shut. A section's height comes from its `rows`, counted from what builds its body: a body that gains a row must count it. A held body keeps its own height (`flexShrink={0}`) and is cut: a box squeezed below its border draws it over the rows above.
+- **Skin:** Claude Code's theme picks it. The `skin` and `isLight` atoms come from the `theme` row as each session seeds, and from its `config.set`. A theme of statusbox's own (`themes/`, named `custom:statusbox:<skin>-<dark|light>`, read by `skinOfTheme`) gives its skin; any other gives classic. Both render hooks set the module's palette `P` from them before they build a span; a colour is a slot of `P`, never a literal, and a Client takes the colours it paints in as props, each with classic's as its fallback. `themeOf` makes each skin's two themes from its palettes. There is no skin option: `$.config.set` takes only Claude Code's built-in themes, so an option could not turn a skin's theme on, and two switches that disagree confused people.
+- **Terminal background:** ground.ts. The `AbovePrompt` hook on the terminal asks for the skin's `bg`, or null for classic or with the `grounded` toggle off. Only a change starts a child, from a `$.clock.after` timer that waits out the redraw a theme switch makes (`SETTLE_MS`): a write from another process landing inside Claude Code's frame splits one of its sequences, and no plugin can ask for the full redraw that would repair it. That child (`/bin/sh`) writes OSC 11 to the terminal device of the first forebear that has one, found once with `ps`. The colour on the terminal is also the `ground` atom, so a reloaded module knows it. `session.end` puts the terminal's own back unless the process goes on (`clear`, `resume`), and `classic.SessionStart` writes the atom again after one.
+- **Chat history:** `ui.render` hooks on `ToolUse`, `UserMessage` (the composer's) and `AssistantMessage` draw history.tsx's rows on the terminal while a skin other than classic is on and the `chatSkinned` toggle allows; otherwise `next(e)`, Claude Code's own drawing (tool results, groups and other prompts always are). A tool row's time comes from the `took` atom, which the `tool.call` hook fills from its call to its answer. A row hook reads atoms only: it fires per transcript row.
 - **Alerts:** `classic.PermissionRequest`, `classic.Stop`, `classic.PreCompact`, `classic.PostCompact`, and threshold checks in `session.measure`.
 
 **"The binary" and file names like `render.rs`, `src/subagent.rs` or `src/notify_state.rs` in comments mean the Rust implementation this plugin replaced.** It was deleted on `dev-claude-plugin`; `67f0e5b` on `dev` (and the `v1.0.0-rc.2` tag) is its final state. Those comments explain why a threshold, a rule or a wording is what it is; keep them.
@@ -51,6 +58,8 @@ All three checks are gates on every commit, and CI runs the first two on Linux, 
 
 - **One test file.** `tests/statusbox.test.ts`; a behaviour with a branch gets a test there. Write UI tests once and loop them over `['terminal', 'desktop']`.
 - `claude --debug` logs every hook failure and every tree the engine refused. In a session that hot-reloads the plugin, the transcript also gets one dim `statusbox: …` line per failure.
+- A render hook is pure: a value written from it, or from any promise it started, is refused (`state.set: denied`). Work it starts that writes a value goes through a `$.clock.after` timer (ground.ts).
+- `themes/` is made from skin.ts; after changing a palette or `themeOf`, make it again (Node 23.6 or later): `node -e "import('./hooks/skin.ts').then(({ SKINS, themeOf }) => { for (const [skin, pair] of Object.entries(SKINS)) for (const light of [false, true]) { const t = themeOf(light ? pair.light : pair.dark, light); if (t) require('fs').writeFileSync('themes/' + skin + (light ? '-light' : '-dark') + '.json', JSON.stringify(t, null, 2) + '\n') } })"`. A test cannot read files, so nothing checks the two agree. Claude Code reads a plugin's themes as it starts: `/reload-plugins` leaves them as they were, so see a change in a new session.
 - On a reload the Client modules swap in a beat before the hooks module, so a Client runs once on the props the old hooks module drew it with. A new prop needs a fallback: a Client that throws stays unmounted past the reload, the plugin's name drawn in its place.
 
 ## Rules
@@ -75,11 +84,11 @@ The engine lists every `$.state` key a module reads and writes, and refuses a mo
 
 ### Platform branches are confined
 
-`OS === 'Windows_NT'` and friends appear only in: the clipboard capture (Windows only), the transcript stream (`findstr` against `cat`), the URL opener, and `hooks/notify.ts`. A branch anywhere else is a design error: decide the behaviour once instead.
+`OS === 'Windows_NT'` and friends appear only in: the clipboard capture (Windows only), the transcript stream (`findstr` against `cat`), the URL opener, and `hooks/notify.ts`. A branch anywhere else is a design error: decide the behaviour once instead. The terminal background has none: where `sh`, `ps` or a terminal device is missing, its write fails and nothing changes.
 
 ### Performance
 
-- No subprocess on the 1-second clock or in a hook that fires per request. `git` runs once after a turn (debounced).
+- No subprocess on the 1-second clock or in a hook that fires per request. `git` runs once after a turn (debounced). The one child a render hook starts is the terminal background's, and only when the colour it asks for changes.
 - The transcript is read as a session seeds (at start, once a background session's conversation arrives, after a `/resume` or `/clear`) and after a response that consulted the advisor only.
 - A Client module's timer changes nothing once it has settled, so an idle box never redraws. The one exception is an open picker's choices: their hover layers loop, hidden, and the picked one's loop shows, for as long as the picker stays open. The hooks module's fold ticker cancels itself once nothing moves.
 

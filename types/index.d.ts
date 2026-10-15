@@ -95,6 +95,17 @@ export type Alerted = { context: boolean; rate: boolean; resetsAt: string | null
 declare module 'claude-code' {
   interface PluginState {
     statusbox: {
+      // The skin of Claude Code's theme (classic for one not statusbox's), and
+      // whether the theme is light.
+      skin: string
+      isLight: boolean
+      // Whether the skin paints the chat history, and each tool call's time by its id.
+      chatSkinned: boolean
+      took: Record<string, number>
+      // Whether the skin paints the terminal's background, and the colour on it
+      // now (null, the terminal's own).
+      grounded: boolean
+      ground: string | null
       reading: Reading | null
       meta: Meta | null
       place: Place | null
