@@ -1786,7 +1786,10 @@ async function seedSession($: $): Promise<void> {
     $.session.id(),
   ])
   seededFor = id
-  const setEffort = (settings as Record<string, unknown>).effortLevel
+  // /effort keeps its level per model id (modelSettings); taken ahead of the
+  // one for every model, as the more specific (no engine doc says which wins).
+  const s = settings as { effortLevel?: unknown; modelSettings?: Record<string, { effortLevel?: unknown } | undefined> }
+  const setEffort = s.modelSettings?.[model.replace(/\[1m\]$/, '')]?.effortLevel ?? s.effortLevel
   // A reload keeps what turn.step learned: the resolved id beats /model's label.
   await update($, meta, m => ({
     model: m?.model ?? model,

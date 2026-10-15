@@ -1170,7 +1170,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
     on('session.root', () => ({ value: '/home/me/repo' }))
     on('session.id', () => ({ value: 'abc' }))
-    on('settings.read', () => ({ value: { effortLevel: 'xhigh' } }))
+    // /effort's level for this model alone: the chip is drawn before any request.
+    on('settings.read', () => ({ value: { modelSettings: { 'claude-sonnet-6': { effortLevel: 'xhigh' } } } }))
     on('agent.list', () => ({ value: [] }))
     on('fs.exists', () => ({ value: false }))
     on('fs.list', () => ({ value: [] }))
