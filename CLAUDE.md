@@ -17,6 +17,8 @@ themes/                          each skin's Claude Code themes, <skin>-<dark|li
 hooks/bar.tsx, claude.tsx, count.tsx, fold.tsx, split.tsx, chevron.tsx, chip.tsx, pill.tsx, wire.tsx   Client modules the terminal runs locally (the bars, the working animation, the rolling figures, the panel's folding headers, the cost split, the sidebar chip's chevron, the model and effort chips (words and chevron, one glow over both), the picker's choices, the picker's wire; count.tsx also holds the number formatters, split.tsx `apportion`)
 types/index.d.ts                 the $.state contract: every value the module keeps, declared under PluginState
 tests/statusbox.test.ts          the one test file, run by `claude plugin test .`
+.github/workflows/ci.yml         validate and test on Linux, macOS and Windows for every push and PR
+.claude/skills/, .claude/agents/ the repo skills (commit, sync, pr, no-comments) and no-comments' comment-sicko agent
 assets/                          README images
 ```
 
@@ -43,7 +45,7 @@ Where each figure comes from:
 - **Chat history:** `ui.render` hooks on `ToolUse`, `UserMessage` (the composer's) and `AssistantMessage` draw history.tsx's rows on the terminal while a skin other than classic is on and the `chatSkinned` toggle allows; otherwise `next(e)`, Claude Code's own drawing (tool results, groups and other prompts always are). A tool row's time comes from the `took` atom, which the `tool.call` hook fills from its call to its answer. A row hook reads atoms only: it fires per transcript row.
 - **Alerts:** `classic.PermissionRequest`, `classic.Stop`, `classic.PreCompact`, `classic.PostCompact`, and threshold checks in `session.measure`.
 
-**"The binary" and file names like `render.rs`, `src/subagent.rs` or `src/notify_state.rs` in comments mean the Rust implementation this plugin replaced.** It was deleted on `dev-claude-plugin`; `67f0e5b` on `dev` (and the `v1.0.0-rc.2` tag) is its final state. Those comments explain why a threshold, a rule or a wording is what it is; keep them.
+**"The binary" and file names like `render.rs`, `src/subagent.rs` or `src/notify_state.rs` in comments mean the Rust implementation this plugin replaced.** It was deleted on `dev-claude-plugin`; `67f0e5b` on `dev` (and the `v1.0.0-rc.2` tag) is its final state.
 
 ## Development
 
@@ -54,7 +56,7 @@ tsc -p .                          # once the engine has written .claude-plugin/t
 claude --plugin-dir .             # a session with this checkout loaded and watched for edits
 ```
 
-All three checks are gates on every commit, and CI runs the first two on Linux, macOS and Windows.
+All three checks are gates on every commit, and CI runs the first two on Linux, macOS and Windows. The repo installs no TypeScript (there is no package.json): without a global `tsc`, run `npx -y -p typescript tsc -p .`.
 
 - **One test file.** `tests/statusbox.test.ts`; a behaviour with a branch gets a test there. Write UI tests once and loop them over `['terminal', 'desktop']`.
 - `claude --debug` logs every hook failure and every tree the engine refused. In a session that hot-reloads the plugin, the transcript also gets one dim `statusbox: …` line per failure.

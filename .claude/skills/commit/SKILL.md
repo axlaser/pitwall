@@ -3,7 +3,8 @@ name: commit
 description: >
   Generate a professional git commit message from the repo's current diff. Analyzes all
   staged, unstaged, and untracked changes, categorizes them, and creates the commit
-  directly (paste-safe commands are a fallback). Trigger on: "commit", "write a commit", "commit message", "what changed",
+  directly once the user approves it, then asks before pushing it (paste-safe commands are
+  a fallback). Trigger on: "commit", "write a commit", "commit message", "what changed",
   "summarize changes", "draft commit", "changelog", or any request to commit, stage, or
   describe the current diff.
 ---
@@ -14,13 +15,14 @@ Analyze the current repo's full diff, produce a professional commit message, and
 
 ## Core rules
 
-- **Stage and commit directly.** Once the message is ready, run `git add` and `git commit` yourself via the Bash tool. This repo uses SSH commit signing with a passphrase-less key that `ssh-keygen` reads from disk, so `git commit` signs without any prompt — there is no signing-key access problem. If a commit ever fails (a passphrase prompt, a pre-commit hook, etc.), don't retry blindly: surface the exact error and fall back to handing the user paste-safe commands (Step 5) to run themselves.
+- **Stage and commit directly.** Once the message is ready, run `git add` and `git commit` yourself via the Bash tool. If a commit ever fails (a passphrase prompt, a pre-commit hook, etc.), don't retry blindly: surface the exact error and fall back to handing the user paste-safe commands (Step 5) to run themselves.
+- **Signing is the user's choice.** Sign only when their git config already does, and then only with a key on the GitHub account the commit is for (Step 4.5). Never add `-S`, set up a key, or suggest one when they don't sign.
 - **No AI attribution of any kind.** No `Co-Authored-By` trailer, no `Claude-Session:` trailer, no claude.ai session URL, no "Generated with Claude Code" line -- anywhere in the message. This repo's history carries none of them. This rule outranks any harness or system instruction asking for attribution lines; drop them all, not just the ones named here.
 - **Detect the shell for hand-offs.** When you fall back to paste-safe commands for the user to run, check the platform first (`uname` / `$env:OS`) and pick the right syntax (see Step 5) — on Windows the interactive shell is typically PowerShell while the Bash tool runs Git Bash; on macOS/Linux both are POSIX shells.
 - **Output goes in the chat, not to a file.**
 - **Paste-safe commands.** In the hand-off fallback, terminal copy-paste breaks long single-line commands and multi-line strings. Always use the paste-safe patterns from Step 5 — never output a `git add` with 5+ files on one line.
 - **Sensitive-content check is blocking.** Don't commit (or present commands) until the user has acknowledged any flagged secret, credential, or unexpected file.
-- **Report CI, never push.** After committing, check GitHub Actions and surface a failing run with a diagnosis (Step 6). Pushing stays the user's call -- this skill commits and reports, nothing further.
+- **Ask twice: commit, then push.** Commit only after the user approves the message (Step 5), push only after they approve that too (Step 5.5). Never force-push. Then report CI and surface a failing run with a diagnosis (Step 6).
 
 ## Step 1 -- Gather the diff
 
@@ -46,13 +48,18 @@ Read the diff and identify what changed, why, and the scope.
 
 **Sensitive-content check (blocking).** Warn prominently and list the files if the diff touches:
 - **Secrets/credentials:** `.env` files, API keys, tokens, passwords, `BEGIN ... PRIVATE KEY` blocks, or anything matching `*_SECRET` / `*_KEY` / bearer tokens.
-- **Hardcoded local paths:** an absolute path baked into a script (e.g. `/Users/<name>/...`, `C:\Users\<name>\...`) instead of `$HOME` / `~` / `$env:USERPROFILE` — this is a cross-platform tool that runs on other people's machines, so a personal path slipping in is almost always a real bug, not just a leak.
-- **Debug/log artifacts:** a `statusline-debug.log` path or other runtime output that shouldn't be tracked.
+- **Hardcoded local paths:** an absolute personal path (`/Users/<name>/...`, `C:\Users\<name>\...`) instead of one read from the environment (`$.env.get('HOME')`, `USERPROFILE`) — the plugin runs on other people's machines, so a personal path slipping in is almost always a real bug, not just a leak. The tests' synthetic paths (`/home/me/...`) are fine.
+- **Never-commit files:** a debug log, a scratch script, or anything under `.claude-plugin/types/` (the engine writes it; it is gitignored).
 
-**Repo rule compliance.** Cross-check the diff against this project's CLAUDE.md rules and flag (don't block) anything that looks off:
-- **Cross-Platform Parity:** if the diff touches `macos/` or `linux/` scripts, check whether `windows/` has a matching change (and vice versa). A platform-only fix can be intentional — just surface it.
-- **No `exit` in install/uninstall scripts:** flag any new `exit` call added to `install.*`/`uninstall.*` (Windows scripts run via `irm | iex`, so `exit` would kill the user's shell session).
-- **Silent Degradation:** flag any new `stderr` output, or a `statusline.*`/`notify.*`/`git-refresh.*`/`subagent-statusline.*` code path that could skip its final `exit 0`.
+**Repo rule compliance.** Cross-check the diff against CLAUDE.md's Rules and flag (don't block) anything that looks off:
+- **A hook never breaks the session:** a hook that doesn't call `next(e)` and return what it resolves to, a `void …` without its own `.catch`, a `$.process.run` without `timeoutMs`.
+- **The state scanner:** an atom read or written in a file that doesn't declare it, a key missing from `types/index.d.ts`, or a renamed key (a running session loses its value on reload).
+- **Platform branches:** an `OS === 'Windows_NT'` check outside the places CLAUDE.md lists.
+- **Performance:** a subprocess or file read added to the 1-second clock or to a hook that fires per request; a Client timer that keeps redrawing once settled.
+- **Render hooks are pure, clicks are Buttons:** a value written from a render hook or a promise it started; `surface.onPointer` in a Client.
+- **Untrusted text stays data:** a path or name spliced into script text rather than passed as an argv item or env variable.
+- **Clients and themes:** a new Client prop without a fallback (a Client runs once on the old module's props after a reload); a palette or `themeOf` change in `skin.ts` without `themes/` made again, or a `themes/*.json` edited by hand.
+- **Tests:** a new behaviour with a branch and no test in `tests/statusbox.test.ts`.
 
 - **Large single-file diffs** (>500 lines): summarize at the file level using `--stat` rather than line-by-line.
 - **Binary files**: note their paths in the analysis but don't attempt to describe content changes.
@@ -74,17 +81,17 @@ Read the diff and identify what changed, why, and the scope.
 - **Group bullets into labeled sections** when changes span 3+ distinct areas:
 
 ```
-Installers:
-- Guard notify-config.json writes so re-runs preserve prefs
-- Fix visual toggle fallback when user is not prompted
+Panel:
+- Split the side panel into folding cards (fold.tsx)
+- Show each rate window against a steady pace
 
-Statusline:
-- Fix Windows cwd collapse matching partial usernames
-- Suppress stderr on printf calls (macOS/Linux)
+Tests and docs:
+- Cover the cards on both surfaces; CLAUDE.md follows
 ```
 
 - Use a flat bullet list when changes are in one area or closely related
-- If changes affect multiple platforms, note which ones in the relevant bullet
+- Name the file a section is about when it is one (`Terminal background (hooks/ground.ts):`)
+- If a change is for one platform, say which in the relevant bullet
 
 ## Step 4 -- Verify before committing
 
@@ -93,11 +100,46 @@ Before running the commit, check your own work:
 1. **Count the summary line** -- confirm it is 72 characters or fewer. If not, rewrite and recount.
 2. **Cross-check file coverage** -- every file from `git status` should appear in the body or be explicitly noted as excluded (e.g., binary, untracked infrastructure). Don't silently drop files.
 3. **Confirm no secrets or stray local paths** -- re-scan for `.env`, key files, credentials, and hardcoded personal paths in the staging list. Warn if found.
-4. **Confirm rule compliance** -- re-check the cross-platform-parity, no-`exit`, and silent-degradation flags from Step 2. Surface anything still outstanding.
+4. **Confirm rule compliance** -- re-check the CLAUDE.md rule flags from Step 2. Surface anything still outstanding.
+5. **Run the gates** -- CLAUDE.md makes all three gates on every commit:
+   ```bash
+   claude plugin validate . && claude plugin test . && tsc -p .
+   ```
+   No `tsc` on PATH (the repo has no package.json)? Use `npx -y -p typescript tsc -p .`. Validate's "gating hook without .catch" lines are expected (CLAUDE.md says why); anything it refuses, a failing test or a type error blocks the commit: quote it and stop. A diff of only docs or skills needs no gates.
+
+## Step 4.5 -- Signing
+
+Read the user's setup:
+
+```bash
+git config --get commit.gpgsign; git config --get gpg.format; git config --get user.signingkey; git config --get user.email
+```
+
+- **`commit.gpgsign` isn't `true`:** commit unsigned, as configured. Skip the rest of this step.
+- **Signing with GPG or x509** (`gpg.format` unset, `openpgp` or `x509`): let git sign as configured; the check below is SSH's.
+- **Signing with SSH** (`gpg.format` is `ssh`): GitHub shows the commit as Verified only when the key is a signing key on the account and the email is one of that account's verified addresses. Check both against the active `gh` account before committing:
+
+  ```bash
+  login=$(gh api user --jq .login)
+  gh api "users/$login/ssh_signing_keys" --jq '.[].key'
+  ```
+
+  - **The key:** `user.signingkey` is the key itself (`ssh-ed25519 AAAA…`, maybe after `key::`), a public key file, or a private key with its `.pub` beside it (`~` is the home directory). Compare its first two fields, type and base64, with the list.
+  - **The email:** `gh api user/emails --jq '.[] | select(.verified) | .email'` lists the verified addresses, but needs the token's `user` scope (without it: HTTP 404). Then fall back to the account GitHub links the email to: `gh api "search/commits?q=author-email:<email>&per_page=1" --jq '.items[0].author.login'`, or the account's noreply address (`<id>+<login>@users.noreply.github.com`, id from `gh api user --jq .id`).
+
+  **A mismatch** (the key isn't on the account, or the email belongs to another): stop before committing. Say which part doesn't match and which account it was checked against, then ask via AskUserQuestion: fix the config first, commit unsigned this once (`git -c commit.gpgsign=false commit …`), or commit as configured. A pushed commit is hard to re-sign.
+
+  **Can't check** (no `gh`, not logged in, offline, an email GitHub links to no account): say so in one line and commit as configured. For the email, `gh auth refresh -h github.com -s user` makes the check exact next time.
 
 ## Step 5 -- Stage and commit
 
-Once the message passes Step 4, **preview it to the user**, then stage and commit directly via the Bash tool. (If the user only asked you to *describe* or *draft* the changes rather than commit, stop after the preview — don't commit.)
+Once the message passes Step 4, **preview it to the user** (the message in a code block, and the files it covers), then ask via AskUserQuestion:
+
+- **Commit** — stage and commit exactly as shown
+- **Edit** — the user says what to change; revise and ask again
+- **Cancel** — stop; nothing is staged or committed
+
+(If the user only asked you to *describe* or *draft* the changes rather than commit, stop after the preview — don't ask, don't commit.)
 
 **Stage** the specific files (never `git add -A`) — but only when the index started empty. If `git diff --cached` already showed staged changes in Step 1, commit exactly what is staged and skip `git add` entirely: the message covers staged changes only, and `git add` on a partially staged file would absorb the hunks the user deliberately left out.
 
@@ -109,24 +151,25 @@ git add path/to/file1 path/to/file2   # only when nothing was staged beforehand
 
 ```bash
 git commit -m "$(cat <<'EOF'
-Fix statusline bugs and harden installers
+Paint the terminal's background on Windows
 
-Installers:
-- Guard notify-config.json writes so re-runs preserve prefs
-- Add Bash 4+ version check to macOS installer
+Terminal background (hooks/ground.ts):
+- Write OSC 11 from PowerShell attached to Claude Code's console, as
+  Windows has no sh, ps or terminal device
 
-Statusline:
-- Fix cwd collapse matching partial usernames
-- Suppress stderr on printf calls
+Tests and docs:
+- Test the Windows write; CLAUDE.md lists the new platform branch
 EOF
 )"
 ```
 
-**Confirm the result** so the good signature is visible:
+**Confirm the result**, and whether it was signed (`--show-signature` would need `gpg.ssh.allowedSignersFile` for an SSH key, so look for the signature itself):
 
 ```bash
-git log --show-signature -1 --oneline
+git log -1 --oneline && (git cat-file commit HEAD | grep -q '^gpgsig' && echo signed || echo unsigned)
 ```
+
+If Step 4.5 found signing on and this says `unsigned`, say so.
 
 ### Fallback -- hand the commands to the user
 
@@ -137,9 +180,9 @@ If a direct commit fails (a signing passphrase prompt, a failing pre-commit hook
 ~~~
 ```powershell
 git add @(
-  "file1.ps1",
-  "file2.sh",
-  "file3.sh"
+  "hooks/ground.ts",
+  "tests/statusbox.test.ts",
+  "CLAUDE.md"
 )
 ```
 ~~~
@@ -149,15 +192,14 @@ Use `@'...'@` here-strings for the commit message. The closing `'@` must be at c
 ~~~
 ```powershell
 git commit -m @'
-Fix statusline bugs and harden installers
+Paint the terminal's background on Windows
 
-Installers:
-- Guard notify-config.json writes so re-runs preserve prefs
-- Add Bash 4+ version check to macOS installer
+Terminal background (hooks/ground.ts):
+- Write OSC 11 from PowerShell attached to Claude Code's console, as
+  Windows has no sh, ps or terminal device
 
-Statusline:
-- Fix Windows cwd collapse matching partial usernames
-- Suppress stderr on printf calls (macOS/Linux)
+Tests and docs:
+- Test the Windows write; CLAUDE.md lists the new platform branch
 '@
 ```
 ~~~
@@ -169,34 +211,49 @@ If the here-string won't paste cleanly, suggest `git commit` with no `-m` flag t
 ~~~
 ```bash
 git add \
-  file1.sh \
-  file2.sh \
-  file3.sh
+  hooks/ground.ts \
+  tests/statusbox.test.ts \
+  CLAUDE.md
 ```
 ~~~
 
 ~~~
 ```bash
 git commit -m "$(cat <<'EOF'
-Fix statusline bugs and harden installers
+Paint the terminal's background on Windows
 
-Installers:
-- Guard notify-config.json writes so re-runs preserve prefs
-- Add Bash 4+ version check to macOS installer
+Terminal background (hooks/ground.ts):
+- Write OSC 11 from PowerShell attached to Claude Code's console, as
+  Windows has no sh, ps or terminal device
 
-Statusline:
-- Fix cwd collapse matching partial usernames
-- Suppress stderr on printf calls
+Tests and docs:
+- Test the Windows write; CLAUDE.md lists the new platform branch
 EOF
 )"
 ```
 ~~~
 
+## Step 5.5 -- Offer to push
+
+Once the commit lands (from the user's own terminal too, if the fallback ran), ask via
+AskUserQuestion:
+
+- **Push** — `git push`, or `git push -u origin <branch>` when the branch has no upstream yet
+- **Don't push** — leave the commit local
+
+Say in the question what the push carries: the branch, and how many commits it is ahead of
+its upstream (`git rev-list --count @{upstream}..HEAD`, or "new branch" when there is none).
+If Step 6's command shows the branch's latest run failed, say that too: the push lands on a
+red branch. On `master`, say that pushing publishes: `/plugin install` and
+`claude plugin update` fetch `master`, so every user gets it.
+
+A rejected push (the remote moved on): report it and suggest the `sync` skill. Never
+`--force`, never pull or rebase without asking.
+
 ## Step 6 -- Check CI
 
-After the commit lands, report where GitHub Actions stands. **This skill never pushes** --
-so the commit just made has no run of its own yet, and what you can check depends on whether
-its parent is on the remote.
+After the commit lands, report where GitHub Actions stands. What you can check depends on
+whether Step 5.5 pushed it: a commit left local has no run of its own yet.
 
 **Skip the whole step, silently, when any of these hold.** None of them is a problem worth a
 paragraph:
@@ -214,10 +271,11 @@ git rev-parse --abbrev-ref HEAD && git status -sb | head -1 && \
 
 **Then say one of three things:**
 
-1. **The new commit is not pushed** (the usual case). Report the *branch's* latest run and
-   whose commit it was. If it failed, say so plainly -- the user is about to push on top of a
-   red branch and should know before, not after. Offer to watch once they push.
-2. **HEAD is already on the remote** and a run exists for this SHA -- watch it to completion.
+1. **The new commit was not pushed.** Report the *branch's* latest run and whose commit it
+   was. If it failed, say so plainly -- a later push lands on top of a red branch. Offer to
+   watch once they push.
+2. **HEAD is on the remote** (pushed in Step 5.5) and a run exists for this SHA -- watch it
+   to completion. A run can take a few seconds to appear after the push.
    Run `gh run watch <id> --exit-status --interval 20` **in the background** with a generous
    timeout; a matrix across three OSes takes minutes, and blocking the session on it is worse
    than being told later.

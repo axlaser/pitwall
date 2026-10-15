@@ -4,7 +4,8 @@ description: >
   Fetch the latest upstream branch and merge it into the current branch, in
   the statusbox repo — feature branches (`dev-<feature>`) sync from
   `dev`, and `dev` itself syncs from `master`. Stages the merge, walks through any conflicts
-  interactively, then creates the signed merge commit directly. Use whenever
+  interactively, then creates the merge commit directly (signed when the
+  user signs commits). Use whenever
   the user says
   "sync", "pull dev", "pull master", "update branch", "merge dev", "merge
   master", "get latest", or anything about bringing upstream changes into
@@ -13,7 +14,7 @@ description: >
 
 # /sync — Merge Upstream into Current Branch
 
-Fetch the latest upstream branch from origin and merge it into the current branch, walking through any conflicts one file at a time. The merge is staged first (`--no-commit`) so its result can be verified before it's recorded; Claude then creates the signed merge commit directly (this repo's SSH signing key is passphrase-less, so `git commit` signs without a prompt — same as the `commit` skill).
+Fetch the latest upstream branch from origin and merge it into the current branch, walking through any conflicts one file at a time. The merge is staged first (`--no-commit`) so its result can be verified before it's recorded; Claude then creates the merge commit directly, signed only when the user's git config signs commits (the `commit` skill's Step 4.5 decides how).
 
 ## Branch model
 
@@ -79,7 +80,8 @@ Tell the user how many files conflict.
 
 Per file:
 - Read the file and show the `<<<<<<<`/`=======`/`>>>>>>>` sections
-- Explain what each side changed and why they conflict — for this repo that's usually the same statusline/install/notify/git-refresh script edited on both branches, or a README section
+- Explain what each side changed and why they conflict — for this repo that's usually `hooks/register.tsx` (every hook lives in it), `tests/statusbox.test.ts` (the one test file), `types/index.d.ts` (keep every key both sides declare), or a README/CLAUDE.md section
+- A conflict in `themes/*.json` is never merged by hand: resolve `hooks/skin.ts`, then make the themes again with the command in CLAUDE.md's Development section and `git add` them
 - Ask via AskUserQuestion:
   - **Keep ours** — `git checkout --ours <file> && git add <file>`
   - **Keep theirs** — `git checkout --theirs <file> && git add <file>`
@@ -92,26 +94,32 @@ Per file:
 
 ## Step 5 — Verify the staged state
 
-1. **No leftover conflict markers** — Grep for `<<<<<<<` across the working tree (glob `*.{sh,ps1,md,json}`) to confirm nothing was left half-resolved.
+1. **No leftover conflict markers** — Grep for `<<<<<<<` across the working tree (glob `*.{ts,tsx,json,md,yml}`) to confirm nothing was left half-resolved.
 2. **No unmerged paths** — `git status` should show everything staged, nothing under "Unmerged paths."
 3. **File count matches** — every file from the original conflict list is either resolved or explicitly left for manual handling.
 
 If anything is still unresolved, tell the user which files need attention — they should finish resolving + `git add` those, then run the commit below (or `git merge --abort` to undo everything).
 
-**Cross-platform / rule check:** if the merge touched `macos/`, `linux/`, or `windows/` scripts, remind the user to eyeball the merged result against CLAUDE.md's Cross-Platform Parity and Silent Degradation rules before committing — a merge can silently reconcile two working versions into a broken one.
+**Run the gates on the merged result** whenever the merge touched `hooks/`, `types/`, `tests/` or `.claude-plugin/`: a merge can silently reconcile two working versions into a broken one (two hooks on the same event, an atom whose key only one side declared in `types/index.d.ts`).
+
+```bash
+claude plugin validate . && claude plugin test . && tsc -p .
+```
+
+No `tsc` on PATH? Use `npx -y -p typescript tsc -p .`. Report a failure and ask before committing; fixing it is a separate commit after the merge, through the `commit` skill.
 
 ## Step 6 — Create the merge commit
 
-With everything staged and verified, create the merge commit directly (`--no-edit` accepts the default merge message; SSH signing is automatic). Pass a short timeout so a stray signing prompt can't hang the session:
+First run the `commit` skill's Step 4.5 signing check: unsigned if the user doesn't sign, and with SSH, a key and email on the GitHub account the merge is for, with a mismatch stopping here to ask. Then create the merge commit directly (`--no-edit` accepts the default merge message). Pass a short timeout so a stray signing prompt can't hang the session:
 
 ```bash
 git commit --no-edit
 ```
 
-Then confirm the branch is synced with `<source>` and the signature is good:
+Then confirm the branch is synced with `<source>`, and whether the merge was signed:
 
 ```bash
-git log --show-signature -1 --oneline
+git log -1 --oneline && (git cat-file commit HEAD | grep -q '^gpgsig' && echo signed || echo unsigned)
 ```
 
 If the commit fails (a signing passphrase prompt, a pre-commit hook), surface the error and hand the user the single-line `git commit --no-edit` to run themselves.
@@ -138,4 +146,5 @@ Once the merge commit is created (`git log -1` shows a merge commit with `origin
 | 3+ conflicting files | Offer bulk resolve vs. per-file walk-through |
 | User wants to bail mid-merge | `git merge --abort`, confirm first |
 | Some files left unresolved | List them; user finishes resolving + `git add`, then you commit, or they abort |
-| Merge touches multiple platforms | Remind to check cross-platform parity before committing |
+| Merge touches the plugin's code | Run validate, test and tsc before committing |
+| Conflict in `themes/*.json` | Resolve `skin.ts`, make the themes again, don't hand-merge |

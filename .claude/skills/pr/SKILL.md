@@ -20,7 +20,7 @@ Analyze the current branch's changes relative to its base branch, draft a PR tit
 
 ## Branch model
 
-Work happens on feature branches named **`dev-<feature>`** (e.g. `dev-notifications`, `dev-cjk-width`), which PR into **`dev`**. `dev` is the integration branch; periodically a **release PR** merges `dev` into **`master`**. When creating a new feature branch, use the `dev-<feature>` name. This skill picks the base automatically from the current branch — no need to ask which one:
+Work happens on feature branches named **`dev-<feature>`** (e.g. `dev-claude-plugin`), which PR into **`dev`**. `dev` is the integration branch; periodically a **release PR** merges `dev` into **`master`**. When creating a new feature branch, use the `dev-<feature>` name. This skill picks the base automatically from the current branch — no need to ask which one:
 
 - On a feature branch (`dev-<feature>`, or any other branch that isn't `dev`/`master`) → base is `dev`.
 - On `dev` → base is `master` (this is the release PR — see Step 2.5).
@@ -32,7 +32,7 @@ Every command below that references "the base" means whichever of those was just
 
 Past PRs in this repo used a body of just `## Summary` + `## Test plan` — no separate "Changes" section, no conventional-commit-style title enforcement. This skill keeps that convention regardless of which base it's targeting. It also bakes in the checks this project's CLAUDE.md calls out explicitly, chief among them a sensitive-content scan: this is a tool that runs on every user's machine, so a hardcoded personal path or leaked credential is a real bug, not a hypothetical.
 
-**There is CI, and there is a test suite.** `ci.yml` installs Claude Code and runs `claude plugin validate .` and `claude plugin test .` on ubuntu-24.04, macos-15 and windows-2025 for every push and PR. Step 7 waits on it. The manual test-plan checklist is still produced, because the things it lists — a rendered box, a toast appearing, a hook firing in a live session — are the ones no automated gate covers, and this project's history is that those are where the bugs are.
+**There is CI, and there is a test suite.** `ci.yml` installs Claude Code and runs `claude plugin validate .` and `claude plugin test .` on ubuntu-24.04, macos-15 and windows-2025 for every push and PR. Step 7 waits on it. The manual test-plan checklist is still produced, because the things it lists — a rendered box, an alert sound playing, a theme repainting the terminal, a hook firing in a live session — are the ones no automated gate covers, and this project's history is that those are where the bugs are.
 
 ## Step 1 — Pre-flight checks
 
@@ -93,12 +93,15 @@ git diff --stat origin/<base>..HEAD
 git diff --name-only origin/<base>..HEAD | awk -F/ '{print $1}' | sort | uniq -c | sort -rn
 ```
 
-Group by area: `hooks/` (the plugin's modules), `types/` (its state contract), `tests/`, `.claude-plugin/` (manifest and marketplace), `.github/`, plus `README.md`, `CLAUDE.md`. Watch for what CLAUDE.md calls out:
+Group by area: `hooks/` (the plugin's modules), `types/` (its state contract), `themes/` (made from `hooks/skin.ts`), `tests/`, `.claude-plugin/` (manifest and marketplace), `.github/`, plus `README.md`, `CLAUDE.md`. Watch for what CLAUDE.md calls out:
 
 - **Platform branches:** a new `OS === 'Windows_NT'` check outside the areas CLAUDE.md confines them to is a design error, not a style one. Flag it in the preview so the reviewer knows a behaviour got branched rather than decided.
 - **A hook that can break the session:** every hook must call `next(e)` and return what it resolves to unless it means to answer for the engine, and nothing a hook awaits may throw past it. Flag new code that could, and remember the failure is quiet: the engine skips the hook and the box simply stops updating.
 - **A new per-tick cost:** a subprocess or a file read added to the 1-second clock, or to a hook that fires on every request, is a regression even when the output is right.
 - **The manifest:** a changed `name` in `.claude-plugin/plugin.json` or `marketplace.json` changes the install line every user typed, and the `$.state` keys.
+- **State keys:** a renamed key in `types/index.d.ts` drops a running session's value on reload.
+- **Render hooks and Clients:** a value written from a render hook, `surface.onPointer` in a Client (pointer drift in VS Code's terminal), or a new Client prop without a fallback.
+- **Themes:** a palette or `themeOf` change in `skin.ts` whose `themes/*.json` were not made again. No test reads files, so nothing else catches it.
 
 **Sensitive-content scan (blocking).** Inspect the diff:
 
@@ -143,7 +146,7 @@ A release PR's body gets a `## Release` section above `## Summary`:
 ## Release
 - Version: `2.1.0` — plugin.json declares 2.1.0 ✓
 - Notes: `docs/releases/2.1.0.md` ✓
-- Installed from the branch: Windows (VS Code, fullscreen) and macOS, notifications confirmed
+- Installed from the branch: Windows (VS Code, fullscreen) and macOS, alert sounds heard
 - A tag, if wanted, is pushed **after** merging, as a separate approved step
 ```
 
@@ -151,7 +154,7 @@ A release PR's body gets a `## Release` section above `## Summary`:
 
 ## Step 3 — Draft the PR
 
-**Title** — match this repo's actual style (`gh pr list`/`git log` history): a short, plain imperative sentence, no forced `type(scope):` prefix (e.g. "Add sound and visual toast notifications", "Rebuild the status line as a Claude Code plugin"). Under 70 characters. For a `dev` → `master` release PR covering several feature merges, summarize the release as a whole rather than listing every commit title — and remember it carries everything already sitting on `dev`, not just the newest branch.
+**Title** — match this repo's actual style (`gh pr list`/`git log` history): a short, plain imperative sentence, no forced `type(scope):` prefix (e.g. "Rebuild the panel as folding cards and add model and effort pickers", "Rebuild the status line as a Claude Code plugin"). Under 70 characters. For a `dev` → `master` release PR covering several feature merges, summarize the release as a whole rather than listing every commit title — and remember it carries everything already sitting on `dev`, not just the newest branch.
 
 **Body** — this repo's merged PRs all use this shape; match it rather than adding sections it doesn't use:
 
@@ -169,8 +172,11 @@ Release PRs additionally carry the `## Release` section from Step 2.5, placed fi
 - `- [ ] Box renders without broken alignment, beside the docked panel and without it`
 - `- [ ] Colors display correctly (green/yellow/red thresholds)`
 - `- [ ] No dim "statusbox: ... skipped" line in the transcript`
-- `- [ ] Git row handles detached HEAD, no-repo, and fresh-clone states`
-- `- [ ] Live session on <platform> — box renders, panel opens and switches sessions, notification seen and heard`
+- `- [ ] Repo row handles detached HEAD, no-repo, and fresh-clone states`
+- `- [ ] Each skin's theme in /theme repaints the box, the panel, the chat and the terminal's background; a built-in theme puts classic and the terminal's own background back`
+- `- [ ] Model and effort pickers open, pick and confirm; panel cards fold and the panel slides open and shut`
+- `- [ ] Hovers and clicks land where drawn in VS Code's terminal, far right and low on the screen too`
+- `- [ ] Live session on <platform> — box renders, panel opens, alert sound heard`
 - `- [ ] Installed from the marketplace with /plugin install, not only loaded with --plugin-dir` (release PRs)
 
 Leave every box unchecked (`- [ ]`) — Claude hasn't run these, so it can't claim they passed. The user checks off what they actually verified.
