@@ -1,6 +1,6 @@
 # CLAUDE.md -- statusbox
 
-A Claude Code plugin made of function hooks: a live status box above the prompt, a docked side panel of agents, pasted-image previews, and desktop notifications. The repository is also its own marketplace, so `/plugin install statusbox --marketplace axlaser/statusbox` installs it from `master`.
+A Claude Code plugin made of function hooks: a live status box above the prompt, a docked side panel (rate-limit usage, the session and its cost, the prompt cache, the advisor, agents), an open button for pasted images, and alert sounds. The repository is also its own marketplace, so `/plugin install statusbox --marketplace axlaser/statusbox` installs it from `master`.
 
 ## Project Structure
 
@@ -9,8 +9,8 @@ A Claude Code plugin made of function hooks: a live status box above the prompt,
 .claude-plugin/marketplace.json  makes the repo a marketplace; its one entry's source is the repo root
 hooks/hooks.json                 names the one hooks module
 hooks/register.tsx               the hooks module: every event hook, the box (AbovePrompt) and the panel (Pane)
-hooks/notify.ts                  desktop alerts: one child process per alert, per OS
-hooks/bar.tsx, claude.tsx, effort.tsx, count.tsx   Client modules the terminal runs locally (the bar, the working animation, the effort chip, the rolling figures; count.tsx also holds the number formatters)
+hooks/notify.ts                  alert sounds: one child process per alert, per OS
+hooks/bar.tsx, claude.tsx, count.tsx, fold.tsx, split.tsx, chevron.tsx, pill.tsx, wire.tsx   Client modules the terminal runs locally (the bars, the working animation, the rolling figures, the panel's folding headers, the cost split, the box chips' chevrons, the picker's choices, the picker's wire; count.tsx also holds the number formatters, split.tsx `apportion`)
 types/index.d.ts                 the $.state contract: every value the module keeps, declared under PluginState
 tests/statusbox.test.ts          the one test file, run by `claude plugin test .`
 assets/                          README images
@@ -20,15 +20,20 @@ assets/                          README images
 
 ## Architecture
 
-Events write atoms; the one `AbovePrompt` render hook reads them; a write redraws exactly the readers. Nothing runs per refresh: the 1-second clock only advances `now` and checks the prompt for a newly pasted image.
+Events write atoms; the one `AbovePrompt` render hook reads them; a write redraws exactly the readers. Nothing runs per refresh: the 1-second clock only advances `now`, checks the prompt for a newly pasted image, and, in a session that started empty, asks for the turn count until its conversation arrives.
 
 Where each figure comes from:
 
 - **Context, cost, rate limits:** `session.measure` and `$.session.usage()` (refreshed after every main-loop request in `turn.step`).
-- **Token totals and prompt count:** the transcript, read once at `session.start` (streamed through `findstr`/`cat` past 4 MiB), then `turn.complete` usage.
+- **Token totals and prompt count:** the transcript, read once at `session.start` (streamed through `findstr`/`cat` past 4 MiB), then each main-loop `turn.step`'s usage as it lands. A session the background daemon runs (the agent view's) starts the plugin before its conversation arrives: then the read waits until `$.session.turns()` is above zero.
 - **Advisor:** only the transcript records advisor iterations, so it is re-read after a turn that consulted one.
 - **Spend:** `telemetry.log` on the collector stream, `api_request.cost_usd`, classified by `query_source` the way the engine does.
 - **Agents:** `$.agent.list()` plus each agent's `turn.step` usage; its cost is matched to its `api_request` record by the four token counts.
+- **Prompt cache:** the `cache_creation_5m_tokens`/`cache_creation_1h_tokens` of each main-loop `api_request` record (its life restarts with every request), seeded from the transcript's last main-loop row at session start; `classic.PostModelSwitch` and `classic.PostCompact` make it cold.
+- **Transcript size:** `$.fs.stat` of the transcript as the session seeds and after each main-loop turn.
+- **Model picker:** the choices are `$.config.list()`'s `model` row, named from the `main` rows of the model catalog Claude Code caches in `cache/model-catalog/` (read when the picker opens); a pick is `$.config.set({ key: 'model' })`, as `/config` sets it. The effort picker's pick rides each request through `turn.step`.
+- **Folded panel sections:** the `folded` atom, kept in `$.store` too and read back at `session.start`.
+- **Folds in motion:** the `motion` atom, the box's picker (`menu`) or a panel section's body (`fold-<NAME>`) a row nearer open or shut, and the room a picker's row makes for its confirm (`menu-room`) a cell, each 24 ms beat of a ticker that runs only while one moves. The motion is written before the atom it animates (`menu`, `folded`): each write redraws, and the other order draws one frame of the end state first. A picker's wire and pills move on the terminal's clock; folding, they go out for `CLOSE_MS` before its rows roll shut. A section's height comes from its `rows`, counted from what builds its body: a body that gains a row must count it. A held body keeps its own height (`flexShrink={0}`) and is cut: a box squeezed below its border draws it over the rows above.
 - **Alerts:** `classic.PermissionRequest`, `classic.Stop`, `classic.PreCompact`, `classic.PostCompact`, and threshold checks in `session.measure`.
 
 **"The binary" and file names like `render.rs`, `src/subagent.rs` or `src/notify_state.rs` in comments mean the Rust implementation this plugin replaced.** It was deleted on `dev-claude-plugin`; `67f0e5b` on `dev` (and the `v1.0.0-rc.2` tag) is its final state. Those comments explain why a threshold, a rule or a wording is what it is; keep them.
@@ -74,12 +79,12 @@ The engine lists every `$.state` key a module reads and writes, and refuses a mo
 ### Performance
 
 - No subprocess on the 1-second clock or in a hook that fires per request. `git` runs once after a turn (debounced).
-- The transcript is read at session start and after an advisor turn only.
-- A Client module's timer changes nothing once it has settled, so an idle box never redraws.
+- The transcript is read at session start (or once a background session's conversation arrives) and after an advisor turn only.
+- A Client module's timer changes nothing once it has settled, so an idle box never redraws. The hooks module's fold ticker cancels itself once nothing moves.
 
 ### Untrusted text stays data
 
-Notification text and paths reach a child process as argv items or environment variables, never inside script text. The Windows scripts are constant strings that read `$env:`.
+Paths and sound names reach a child process as argv items or environment variables, never inside script text. The Windows scripts are constant strings that read `$env:`.
 
 ### Repo Skills and Branching
 

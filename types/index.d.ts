@@ -50,13 +50,26 @@ export type Spend = { main: number; agents: number; background: number }
 
 // The latest main-loop turn's speed: how long until Claude's first row that
 // shows (text or a tool call, thinking included in the wait), and the whole
-// turn; null until known.
-export type Speed = { firstOutputMs: number | null; replyMs: number | null }
+// turn; null until known. `startedAt` is when the turn still running began.
+export type Speed = { firstOutputMs: number | null; replyMs: number | null; startedAt: number | null }
 
-// A pasted image's thumbnail, drawn above the box while its `[Image #id]`
-// stands in the draft: a Raster's cells, quadrant blocks of its pixels, and
-// the full image saved where the viewer opens it.
-export type Preview = { id: number; columns: number; rows: number; cells: string; path: string }
+// The main loop's prompt-cache entry: when a request last read or wrote it
+// (0 once a model switch forfeited it), how long it lives unread (5 minutes or
+// an hour, as the request wrote it), and the model it is that model's for.
+export type Cache = { at: number; ttlMs: number; model: string }
+
+// The box's open dropdown: which chip opened it and the choices it offers;
+// `pick`, the choice clicked and waiting to be confirmed; `isClosing` while it
+// folds away.
+export type Menu = { kind: 'model' | 'effort'; options: string[]; pick?: string; isClosing?: boolean }
+
+// A fold the hooks module animates, the box's picker or a panel section's:
+// how open it stands, 0 shut to 1 open, and which of the two it is bound for.
+export type Motion = { at: number; to: 0 | 1 }
+
+// A pasted image, offered above the box while its `[Image #id]` stands in the
+// draft: the copy saved where the viewer opens it.
+export type Preview = { id: number; path: string }
 
 export type Agent = {
   id: string
@@ -93,6 +106,11 @@ declare module 'claude-code' {
       agents: Agent[]
       spend: Spend
       speed: Speed
+      cache: Cache | null
+      transcriptBytes: number | null
+      menu: Menu | null
+      motion: Record<string, Motion>
+      folded: string[]
       previews: Preview[]
       now: number
       panelClosed: boolean

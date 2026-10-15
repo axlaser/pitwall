@@ -1,6 +1,9 @@
 import type { ClientModule } from 'claude-code'
 
-type Props = { percent: number; isWorking: boolean; width: number }
+// `mark`, where given, is a percent drawn as a tick across the bar: where a
+// rate window would stand at a steady pace. `color`, where given, fills it in
+// that one colour in place of the ramp.
+type Props = { percent: number; isWorking: boolean; width: number; mark?: number; color?: string }
 // `shown` glides toward `target`; `phase` walks the shine while Claude works.
 type State = { shown: number; target: number; isWorking: boolean; phase: number }
 
@@ -9,6 +12,9 @@ const TICK_MS = 50
 // at the start, yellow by 60 %, red by 85 %.
 const STOPS: [number, number[]][] = [[0, [63, 185, 80]], [60, [210, 153, 34]], [85, [248, 81, 73]], [100, [248, 81, 73]]]
 const TRACK = '#3c3c3c'
+// The shine's glow by distance from its centre: washed toward white, brightest
+// in the middle and fading over the cells either side.
+const GLOW = [0.75, 0.5, 0.3, 0.12]
 
 // The context bar: one continuous line, heavy where filled and coloured along
 // the ramp, light and dark where not, filled to half a cell (`╾`), gliding to
@@ -24,7 +30,8 @@ const Bar: ClientModule<Props, State> = (props, surface) => {
     surface.setState({ ...s, target: props.percent, isWorking: props.isWorking })
   }
   const { Text } = surface.elements
-  return <Text>{runs(s?.shown ?? 0, props.width, s?.isWorking ? s.phase : null).map(r => <Text color={r.color} bold={r.bold}>{r.text}</Text>)}</Text>
+  const cells = runs(s?.shown ?? 0, props.width, s?.isWorking ? s.phase : null, props.mark, props.color)
+  return <Text>{cells.map(r => <Text color={r.color} bold={r.bold}>{r.text}</Text>)}</Text>
 }
 
 function tick(surface: { state: State | undefined; setState: (next: State) => void }) {
@@ -40,18 +47,24 @@ function tick(surface: { state: State | undefined; setState: (next: State) => vo
 }
 
 // The cells as runs of one style: the filled part's heavy line, the half cell
-// that joins it to the track, the track; the shine is two cells sweeping the
-// filled part, washed toward white.
-function runs(percent: number, width: number, phase: number | null): { text: string; color: string; bold?: boolean }[] {
+// that joins it to the track, the track; the shine is a glow sweeping the
+// filled part, shaded off from its centre.
+function runs(percent: number, width: number, phase: number | null, mark?: number, fixed?: string): { text: string; color: string; bold?: boolean }[] {
   const fill = (Math.min(100, Math.max(0, percent)) / 100) * width
   const full = Math.floor(fill)
   const isHalf = fill - full >= 0.5
-  const shine = phase === null || full === 0 ? -1 : phase % (full + 8)
+  // The glow's centre: it enters from before the bar's start and leaves past its fill.
+  const shine = phase === null || full === 0 ? null : (phase % (full + 8)) - (GLOW.length - 1)
+  const tick = mark === undefined ? -1 : Math.min(width - 1, Math.floor((Math.max(0, mark) / 100) * width))
   const cells: { text: string; color: string; bold?: boolean }[] = []
   for (let i = 0; i < width; i++) {
-    const color = ramp(((i + 0.5) / width) * 100)
-    if (i < full) cells.push(i === shine || i === shine - 1 ? { text: '━', color: hex(mix(color, [255, 255, 255], 0.6)), bold: true } : { text: '━', color: hex(color) })
-    else if (i === full && isHalf) cells.push({ text: '╾', color: hex(color) })
+    const rgb = ramp(((i + 0.5) / width) * 100)
+    const color = fixed ?? hex(rgb)
+    if (i === tick) cells.push({ text: '┃', color: '#ffffff', bold: true })
+    else if (i < full) {
+      const wash = shine === null ? undefined : GLOW[Math.abs(i - shine)]
+      cells.push(wash === undefined ? { text: '━', color } : { text: '━', color: hex(mix(rgb, [255, 255, 255], wash)), bold: wash >= 0.5 })
+    } else if (i === full && isHalf) cells.push({ text: '╾', color })
     else cells.push({ text: '─', color: TRACK })
   }
   return cells.reduce<typeof cells>((out, c) => {

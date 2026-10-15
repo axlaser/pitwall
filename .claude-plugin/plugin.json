@@ -1,14 +1,13 @@
 {
   "name": "statusbox",
   "version": "2.0.0",
-  "description": "A live status box above the Claude Code prompt (context, model, git, tokens, cost, rate limits), a side panel of agents, pasted-image previews, and desktop notifications",
+  "description": "A live status box above the Claude Code prompt (context, model, git, tokens), a side panel of rate-limit usage, the session and its cost, the prompt cache, the advisor and agents, an open button for pasted images, and alert sounds",
   "author": { "name": "axlaser" },
   "repository": "https://github.com/axlaser/statusbox",
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "toasts": { "type": "boolean", "title": "Desktop notifications", "description": "Show a desktop notification when Claude needs permission, finishes, compacts, or crosses an alert threshold", "default": true },
-    "sounds": { "type": "boolean", "title": "Notification sounds", "description": "Play a system sound with each alert", "default": true },
+    "sounds": { "type": "boolean", "title": "Alert sounds", "description": "Play a sound when Claude needs permission, finishes, compacts, or crosses an alert threshold", "default": true },
     "contextAlert": { "type": "number", "title": "Context alert (%)", "description": "Alert once when the context window reaches this percentage; 0 turns it off", "default": 70, "min": 0, "max": 100 },
     "rateLimitAlert": { "type": "number", "title": "Rate limit alert (%)", "description": "Alert once per window when the 5-hour or 7-day rate limit reaches this percentage; 0 turns it off", "default": 80, "min": 0, "max": 100 }
   }

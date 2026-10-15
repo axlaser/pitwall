@@ -3,7 +3,7 @@
 # statusbox
 
 **A live status box for [Claude Code](https://claude.ai/code), built as a plugin.**<br>
-Context, git, tokens, cost and rate limits above the prompt, a side panel of agents, and desktop notifications.
+Context, git and tokens above the prompt, a side panel of rate-limit usage, the session and its cost, the prompt cache, the advisor and agents, and alert sounds.
 
 [![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](#install)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](#install)
@@ -12,7 +12,7 @@ Context, git, tokens, cost and rate limits above the prompt, a side panel of age
 
 ![screenshot](assets/screenshot.png)
 
-[Install](#install) · [The box](#the-box) · [The side panel](#the-side-panel) · [Notifications](#notifications) · [Settings](#settings) · [Troubleshooting](#troubleshooting)
+[Install](#install) · [The box](#the-box) · [The side panel](#the-side-panel) · [Alert sounds](#alert-sounds) · [Settings](#settings) · [Troubleshooting](#troubleshooting)
 
 </div>
 
@@ -54,55 +54,56 @@ A band above the prompt, redrawn as things happen rather than on a timer. Its fi
 
 | Row | Contents |
 |-----|----------|
-| **repo** | Directory (shortened to `~`), branch, `↑ahead` `↓behind`, `+insertions` `-deletions` `~untracked`, `⊟ stashes`, and `agents ›` to open the side panel. Labelled **project** outside a git repo. Click the path to open the repository's web page. |
-| **model** | Context bar with %, `used/window` tokens, model, reasoning effort, `● ready` or Claude's working animation, and your Claude Code version (click it for the changelog). |
-| **tokens** | Session totals for `in`, `cache↑` (writes), `cache↓` (reads) and `out`, the latest turn's share in brackets, then how long the latest turn took to its first output and in all. |
-| **advisor** | Only when the advisor tool was used: its model, calls, tokens and cost. |
-| **spend** | This process's cost split by who asked: the main conversation, subagents, and background work (titles, compaction). `earlier` is what the session cost before the plugin saw it. |
-| **cost** | Total cost in USD, messages, session length, and 5-hour and 7-day rate-limit usage. |
+| **repo** | Directory (shortened to `~`), branch, `↑ahead` `↓behind`, `+insertions` `-deletions` `~untracked`, `⊟ stashes`, and `sidebar ›` to open or close the side panel (its chevron turns to match). Labelled **project** outside a git repo. Click the path to open the repository's web page. |
+| **model** | Context bar with %, `used/window` tokens, model `▾`, reasoning effort `▾`, and `● ready` or Claude's working animation. |
+| **tokens** | Session totals for `in`, `cache↑` (writes), `cache↓` (reads) and `out`, with the current turn's share in brackets, counted as each request lands. |
 
 Rows with nothing to show are hidden.
 
 **Reading it**
 
-- **Context bar:** a line that shades from green to yellow at 60% and red from 85%. It glides to each new reading, and a highlight runs along it while Claude works.
-- **Effort:** click it to step through the levels, or use ← and → while it has focus. The pick lasts for this session and saves nothing.
+- **Context bar:** a line that shades from green to yellow at 60% and red from 85%. It glides to each new reading, and a soft glow runs along it while Claude works.
+- **Model and effort:** click either (or its `▾`) and the box rolls open with its choices rippling in, centred, a line unrolling from it to the one in force, which is highlighted. Click another and the line glides over to it, its arrowhead leading the way; `✓ Confirm`, to the right of the choices, applies it (the row slides left to make room where it has to; click the chip again to back out). Switching between the two pickers slides the line across. The model list is the one in `/config`, each model named by its version, and picking one switches the model the same way, keeping the context window you are on. The effort pick lasts for this session and saves nothing; in its picker each level plays a flourish of its own as the row opens and again under the pointer, from a slow ripple at low to a flare at max.
 - **Rate limits:** `5h 42% ⇡3% (1h)` means 42% used, 3 points ahead of an even pace, resetting in 1 hour. `⇣` means you're under pace. Rate limits only show on Pro and Max plans.
 - **First output:** green under 10 s, yellow under 30 s, red above.
 - **Compact:** past 85% context, a `compact context` button appears under the box.
-- **Pasted images (Windows):** paste a screenshot with **Alt+V** and a thumbnail of it shows above the box while `[Image #N]` is in your draft. Click `#N open ↗` to see it full size.
+- **Pasted images (Windows):** paste a screenshot with **Alt+V** and `#N open ↗` shows above the box while `[Image #N]` is in your draft. Click it to see the image full size.
 
 **Keys:** `ctrl+x ctrl+a` hides and shows the box, `ctrl+x tab` moves the focus into it.
 
 ## The side panel
 
-In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript. Open it with `/sidebar` or `agents ›` in the box.
+In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript. Open it with `/sidebar` or `sidebar ›` in the box, which closes it again too.
 
-It holds a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, with Claude's animation while it works.
+Click a section's header to fold it, smoothly, down to one line that sums it up (`▸ USAGE ── 5-hour 10% · 7-day 5%`), and again to open it. Folded sections stay folded in later sessions. Your Claude Code version sits at the bottom, with a link to the changelog.
 
-**Keys:** `ctrl+x ←` and `ctrl+x →` widen and narrow it, `ctrl+x x` closes it. Once closed it stays closed until you open it again.
+- **Usage:** the 5-hour and 7-day rate limits, each with a bar, a tick where a steady pace would put you by now, and the time to its reset.
+- **Session:** messages, session length and how long the latest turn took to its first output and in all (counting up while Claude works), the size of its transcript on disk, then the session's cost: its total, and a bar split by who asked (the main conversation, the advisor, subagents, background work such as titles and compaction, and `earlier`, what the session cost before the plugin saw it), with each part's dollars and share below.
+- **Cache:** once Claude has answered, whether the prompt cache still holds the conversation. **Warm**, the next message reads it back for a small part of the input price, and a countdown shows how long it stays warm without a message (5 minutes or an hour, whichever Claude Code asked for). **Cold**, it writes the whole context to the cache again at more than the full input price. The card shows what the next message pays for that and what it would pay the other way. Switching model or compacting makes it cold.
+- **Advisor:** once the advisor tool has been used, a card with its model, calls, tokens and cost, and a bar for its share of the session's cost.
+- **Agents:** a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, with Claude's animation while it works.
+
+**Keys:** `ctrl+x ←` and `ctrl+x →` widen and narrow it, `ctrl+x x` closes it. Once you click a header, Return or Space folds and opens it. Once closed it stays closed until you open it again.
 
 Claude Code docks panels on the right, and only in fullscreen mode at 110 columns or wider; a plugin can't move it to the left.
 
-## Notifications
+## Alert sounds
 
-A sound and a desktop notification for the moments you'd otherwise miss.
+A sound for the moments you'd otherwise miss.
 
 | Event | When |
 |-------|------|
-| Permission request | Claude is waiting for your approval (the message names the tool and the command or file) |
+| Permission request | Claude is waiting for your approval |
 | Finished | Claude finishes responding. Not while a subagent it's waiting on is still running. |
 | Compaction start / done | Context compaction begins or ends |
 | Context high | Context usage reaches 70%, once until it drops below again |
 | Rate limit | 5-hour or 7-day usage reaches 80%, once per window |
 
-**Clicking a notification** brings the session's window to the front: on Windows the terminal or VS Code window the session runs in (for 60 seconds after it appears), on macOS the terminal app (needs terminal-notifier), on Linux the X11 window (needs `xdotool`).
-
-| Platform | Notifications | Sounds |
-|----------|---------------|--------|
-| Windows | Built in | Built in (Windows Media sounds) |
-| macOS | Built in; install [terminal-notifier](https://github.com/julienXX/terminal-notifier) (`brew install terminal-notifier`) for click-to-focus | `afplay` with the system sounds |
-| Linux | `notify-send` (`libnotify-bin` / `libnotify`) | `paplay`, `ffplay` or `ogg123` with the freedesktop sounds |
+| Platform | Sounds |
+|----------|--------|
+| Windows | Built in (Windows Media sounds) |
+| macOS | `afplay` with the system sounds |
+| Linux | `paplay`, `ffplay` or `ogg123` with the freedesktop sounds |
 
 ## Settings
 
@@ -110,8 +111,7 @@ In `/config`, under statusbox:
 
 | Setting | Default | |
 |---------|---------|---|
-| Desktop notifications | on | |
-| Notification sounds | on | |
+| Alert sounds | on | |
 | Context alert (%) | 70 | 0 turns it off |
 | Rate limit alert (%) | 80 | 0 turns it off |
 
@@ -123,7 +123,7 @@ In `/config`, under statusbox:
 
 **The side panel doesn't appear.** It needs fullscreen mode and 110 columns or more. `/sidebar` says so when it can't place the panel.
 
-**No notifications.** Check the settings above, then your OS: Windows' notification settings for "Windows PowerShell", macOS's for terminal-notifier or Script Editor, and that `notify-send` is installed on Linux.
+**No sounds.** Check the setting above, your system volume, and on Linux that one of `paplay`, `ffplay` or `ogg123` is installed.
 
 ## How it works
 
