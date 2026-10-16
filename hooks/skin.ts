@@ -35,8 +35,6 @@ export const CLASSIC: Palette = {
   track: '#3c3c3c',
   mark: '#ffffff',
   models: { opus: '#d77757', sonnet: '#5f9cf5', haiku: '#5fbf8f', fable: '#b48cf2', other: '#a9afc2' },
-  // A named colour's glow washes from VS Code's own dark theme's, near most
-  // terminals'.
   efforts: {
     low: { color: 'gray', shine: '#666666' },
     medium: { color: 'white', shine: '#e5e5e5' },
@@ -59,8 +57,6 @@ const hex = ({ efforts: [low, medium, high, xhigh, max], ...p }: Spec): Palette 
   },
 })
 
-// Tokyo Night (folke/tokyonight.nvim): its night palette, and its day
-// palette, the night's inverted.
 const TOKYO_NIGHT = hex({
   name: 'Tokyo Night', bg: '#1a1b26',
   accent: '#7aa2f7', text: '#c0caf5', muted: '#565f89',
@@ -80,8 +76,6 @@ const TOKYO_DAY = hex({
   efforts: ['#848cb5', '#3760bf', '#007197', '#8c6c3e', '#f52a65'],
 })
 
-// Dracula (spec.draculatheme.com), and Alucard, its light theme (the colours
-// of dracula's own Alucard themes).
 const DRACULA = hex({
   name: 'Dracula', bg: '#282a36',
   accent: '#bd93f9', text: '#f8f8f2', muted: '#6272a4',
@@ -101,7 +95,6 @@ const ALUCARD = hex({
   efforts: ['#6c664b', '#1f1f1f', '#036a96', '#846e15', '#cb3a2a'],
 })
 
-// Catppuccin (catppuccin/palette): Mocha, and Latte.
 const MOCHA = hex({
   name: 'Catppuccin Mocha', bg: '#1e1e2e',
   accent: '#cba6f7', text: '#cdd6f4', muted: '#6c7086',
@@ -121,7 +114,6 @@ const LATTE = hex({
   efforts: ['#9ca0b0', '#4c4f69', '#04a5e5', '#df8e1d', '#d20f39'],
 })
 
-// Gruvbox (morhetz/gruvbox): its bright colours on dark, its faded on light.
 const GRUVBOX_DARK = hex({
   name: 'Gruvbox Dark', bg: '#282828',
   accent: '#fe8019', text: '#ebdbb2', muted: '#928374',
@@ -141,10 +133,6 @@ const GRUVBOX_LIGHT = hex({
   efforts: ['#928374', '#3c3836', '#427b58', '#b57614', '#9d0006'],
 })
 
-// Nord (nordtheme.com): Polar Night under Snow Storm, Frost and Aurora; its
-// comment grey brightened, as nord's own editor themes do. Nord has no light
-// palette: its bright designs put the same colours on Snow Storm, with
-// Aurora's orange for its yellow, which Snow Storm swallows.
 const NORD = hex({
   name: 'Nord', bg: '#2e3440',
   accent: '#88c0d0', text: '#d8dee9', muted: '#616e88',
@@ -225,10 +213,7 @@ export function skinOfTheme(theme: unknown): { skin: string; isLight: boolean } 
   return m?.[1] && m[1] !== 'classic' && SKINS[m[1]] ? { skin: m[1], isLight: m[2] === 'light' } : null
 }
 
-// Whether Claude Code's theme, as /config names it, is a light one: its own
-// light themes all start so, and a skin's says so; another custom theme's
-// name says nothing, so dark.
-export const isLightTheme = (theme: unknown) => (typeof theme === 'string' && theme.startsWith('light')) || skinOfTheme(theme)?.isLight === true
+export const isKnownLightTheme = (theme: unknown) => (typeof theme === 'string' && theme.startsWith('light')) || skinOfTheme(theme)?.isLight === true
 
 export type Theme = { name: string; base: 'dark' | 'light'; overrides: Record<string, string> }
 export function themeOf(p: Palette, isLight: boolean): Theme | null {

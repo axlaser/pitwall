@@ -1,11 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
-// Claude Code paints no background of its own and no theme key reaches one:
-// everything it draws sits on the terminal's. OSC 11 sets that colour (VS
-// Code's terminal, iTerm2, Ghostty, kitty, WezTerm and Windows Terminal take
-// it; Apple Terminal ignores it), and OSC 111 puts the terminal's own back.
-//
 // Nothing in the plugin API writes to the terminal, and a child of the engine
 // has no terminal of its own, so no /dev/tty to write to: the child writes to
 // the device of the first of its forebears that has one, Claude Code itself.
@@ -29,8 +24,6 @@ done
 [ -n "$tty" ] && [ -w "$tty" ] || exit 1
 printf '\\033]%s\\007' "$STATUSBOX_OSC" > "$tty" && printf '%s' "$tty"
 `
-// Exits 1 where the parent has no console, or one that takes no sequences (it
-// would print them). Compiling the calls takes about 400 ms.
 const PS = `
 trap { exit 1 }
 Add-Type -Name Console -Namespace Statusbox -MemberDefinition @'
@@ -53,6 +46,8 @@ public static bool Paint(string osc) {
 if (-not [Statusbox.Console]::Paint([char]27 + ']' + $env:STATUSBOX_OSC + [char]7)) { exit 1 }
 'CONOUT$'
 `
+const SET_BACKGROUND = '11'
+const RESET_BACKGROUND = '111'
 const TIMEOUT_MS = 2000
 // A theme switched redraws the whole screen at once, and a write from another
 // process that lands inside that frame splits one of Claude Code's own
@@ -93,7 +88,7 @@ async function paintTo($: $, color: string | null): Promise<void> {
   try {
     if (painted === undefined) painted = await read($, kept)
     if (isTtyMissing || color === painted) return
-    const osc = color === null ? '111' : `11;${color}`
+    const osc = color === null ? RESET_BACKGROUND : `${SET_BACKGROUND};${color}`
     const argv = (await $.env.get('OS')) === 'Windows_NT' ? ['powershell', '-NoProfile', '-NonInteractive', '-Command', PS] : ['/bin/sh', '-c', SH]
     const r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS, env: { STATUSBOX_OSC: osc, STATUSBOX_TTY: tty ?? '' } })
     const out = r.stdout.trim()

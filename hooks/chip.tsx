@@ -9,9 +9,6 @@ const GLOW_MS = 60
 
 const Chip: ClientModule<Props, State> = (props, surface) => {
   const s = surface.state
-  // On a reload this module can run a beat before the hooks module does, on
-  // the props the old one drew it with: a prop missing then must not throw,
-  // or the chip stays unmounted, the plugin's name drawn in its place.
   const frames = props.frames ?? []
   const steps = Math.max(0, frames.length - 1)
   const target = props.isOpen ? steps : 0

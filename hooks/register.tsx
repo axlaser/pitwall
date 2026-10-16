@@ -9,7 +9,7 @@ import { apportion } from './split'
 import type { Figure } from './count'
 import { ground, keepGround, unground } from './ground'
 import { notify } from './notify'
-import { isLightTheme, paletteOf, skinOfTheme } from './skin'
+import { isKnownLightTheme, paletteOf, skinOfTheme } from './skin'
 import { promptRow, replyBlock, toolRow } from './history'
 import type { Palette } from './skin'
 
@@ -143,7 +143,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if ('value' in r) {
       await update($, skin, () => skinOfTheme(r.value)?.skin ?? 'classic')
-      await update($, isLight, () => isLightTheme(r.value))
+      await update($, isLight, () => isKnownLightTheme(r.value))
     }
     return r
   })
@@ -191,8 +191,6 @@ export const register: Register = (on, options) => {
     return next(e)
   })
   on('classic.Stop', async ($, e, next) => {
-    // A turn that ends while a subagent runs is only paused: Claude Code goes
-    // on when it reports back.
     const pending = e.background_tasks
     if (!(Array.isArray(pending) && pending.length > 0)) void notify($, 'stop', sounds)
     return next(e)
@@ -380,7 +378,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     isAwaitingConversation = false
     scheduleGit($)
-    inPrompt = new Set()
+    draftImageIds = new Set()
     await update($, previews, () => [])
     await update($, menu, () => null)
     await update($, motion, ({ menu: _, 'menu-room': __, ...rest }) => rest)
@@ -652,7 +650,7 @@ export const register: Register = (on, options) => {
     const elements = $.ui.resolve(e)
     const { Box, Button, Text } = elements
     const Client = 'Client' in elements ? elements.Client : undefined
-    const inner = Math.max(16, e.props.bodyColumns - 2)
+    const inner = paneInnerOf(e.props.bodyColumns)
     const draw = (span: Span) => (
       <Text color={span.color} bold={span.bold} dimColor={span.dimColor}>
         {span.text}
@@ -705,7 +703,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
     const share = adv?.usd != null && r?.costUsd ? Math.min(100, Math.round((adv.usd / r.costUsd) * 100)) : null
-    const meter = inner - 4
+    const meter = inner - CARD_INSET
     const line = (owner: string, [label, values]: [string, Span[][]]) => {
       const labelled = [label.padEnd(8), `${label} `].flatMap(head => values.map((value): Pair => [[dim(head), ...value], []]))
       return figures(owner, pick(meter, [...labelled, [values[values.length - 1] ?? [], []]])[0])
@@ -1171,6 +1169,8 @@ type Row = { section: number; label: string; content: Span[]; isTight?: boolean 
 type Section = { name: string; summary: string; tint?: string; rows: number; body: (clip?: number) => JSX.Element }
 
 const BORDER_ROWS = 2
+export const CARD_INSET = 4
+export const paneInnerOf = (bodyColumns: number) => Math.max(16, bodyColumns - 2)
 const FRAMES = { round: ['╭', '╮', '╰', '╯', '─', '│'], double: ['╔', '╗', '╚', '╝', '═', '║'] } as const
 const held = (clip?: number) => (clip === undefined ? {} : { height: Math.max(2, clip), overflow: 'hidden' as const })
 
@@ -1403,7 +1403,7 @@ async function toggleFold($: $, name: string): Promise<void> {
   await $.store.set('folded', list).catch(() => undefined)
 }
 
-const ROW_MS = 24
+export const ROW_MS = 24
 const MOST_MS = 320
 const SLIDE_MS = 240
 const DROP_MS = 400
@@ -1536,7 +1536,6 @@ function aliasOf(model: string | undefined): string | undefined {
 
 const unviewable = new Set<string>()
 
-// A finished agent the view refuses stays refused: its card drops the press.
 async function viewAgent($: $, agent?: Agent): Promise<void> {
   const shown = await $.ui.view(agent ? { agentId: agent.id } : {})
   if (shown.deny === undefined) return
@@ -1751,7 +1750,6 @@ function costParts(P: Palette, x: Spend, total: number, advisor: number, agentsA
   ].filter(part => part.usd >= 0.00005)
 }
 
-// The windows are the account's, so the last session's reading stands until a window resets.
 function carriedRate(kept: unknown, t: number): RateWindow[] {
   if (!Array.isArray(kept)) return []
   return kept.flatMap((w: Partial<RateWindow> | null): RateWindow[] => {
@@ -1878,14 +1876,11 @@ async function transcriptPath($: $): Promise<string | null> {
 
 const gone = new Set<string>()
 
-// Claude Code drops a finished agent's task some seconds after it ends, raising
-// nothing: the panel keeps it until it has been finished a minute.
-let syncing: Promise<void> = Promise.resolve()
+let syncQueue: Promise<void> = Promise.resolve()
 
-// One at a time: a list fetched before another call's write must not land after it.
 function refreshAgents($: $): Promise<void> {
-  const run = syncing.then(() => syncAgents($))
-  syncing = run.catch(() => undefined)
+  const run = syncQueue.then(() => syncAgents($))
+  syncQueue = run.catch(() => undefined)
   return run
 }
 
@@ -1920,6 +1915,7 @@ async function syncAgents($: $): Promise<void> {
           cacheTtlMs: old?.cacheTtlMs ?? FIVE_MINUTES,
         }
       }),
+    // Claude Code drops a finished agent's task some seconds after it ends, raising nothing.
     ...was.filter(p => !gone.has(p.id) && !list.some(a => a.id === p.id)).map(p => (p.doneAt === null ? { ...p, status: 'completed', doneAt: t } : p)),
   ]
   const next = merge(prev)
@@ -1981,7 +1977,7 @@ async function seedSkin($: $, options: Record<string, unknown>): Promise<void> {
   const row = (key: string) => rows.find(x => x.key === key)?.value
   const theme = row('theme')
   await update($, skin, () => skinOfTheme(theme)?.skin ?? 'classic')
-  await update($, isLight, () => isLightTheme(theme))
+  await update($, isLight, () => isKnownLightTheme(theme))
   await update($, chatSkinned, () => (row('statusbox.chatSkin') ?? options.chatSkin) !== false)
   await update($, grounded, () => (row('statusbox.terminalBackground') ?? options.terminalBackground) !== false)
 }
@@ -2150,7 +2146,7 @@ async function readTranscript(
 // larger one is streamed through a child that prints it, piece by piece. On
 // Windows that is `findstr /r ^`, every line byte for byte. Backslashes only,
 // or it reads `/.claude` as a switch.
-const FS_READ_MAX = 4 * 1024 * 1024
+export const FS_READ_MAX = 4 * 1024 * 1024
 
 async function* transcriptLines($: $, path: string): AsyncGenerator<string> {
   if ((await $.fs.stat(path)).size <= FS_READ_MAX) {
@@ -2176,17 +2172,16 @@ const SAVE_PS =
   '$img.Save($env:STATUSBOX_SAVE, [System.Drawing.Imaging.ImageFormat]::Png)'
 
 const captured = new Map<number, Promise<Preview | null>>()
-let inPrompt = new Set<number>()
+let draftImageIds = new Set<number>()
 
-// Only a paste reads the clipboard; a capture that lands after its placeholder went shows nothing.
 async function syncPreviews($: $, text: string, isPaste: boolean): Promise<void> {
   const ids = new Set([...text.matchAll(/\[Image #(\d+)\]/g)].map(m => Number(m[1])))
-  inPrompt = ids
+  draftImageIds = ids
   if ((await read($, previews)).some(p => !ids.has(p.id))) await update($, previews, list => list.filter(p => ids.has(p.id)))
   for (const id of ids) {
     if (isPaste && !captured.has(id)) captured.set(id, captureClipboard($, id).catch(() => null))
     const preview = await captured.get(id)
-    if (preview && inPrompt.has(id)) await update($, previews, list => (list.some(p => p.id === id) ? list : [...list, preview]))
+    if (preview && draftImageIds.has(id)) await update($, previews, list => (list.some(p => p.id === id) ? list : [...list, preview]))
   }
 }
 

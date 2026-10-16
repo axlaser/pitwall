@@ -1,18 +1,9 @@
 import type { ClientModule } from 'claude-code'
 import { TURN_TICK_MS, turned } from './turn'
 
-// `scope` is the hover group the chip's Button shares, so the pointer on
-// either lights both. The group is this Button's: a Text inside a Button
-// follows a group but cannot light it.
 type Props = { isOpen: boolean; frames: string[]; scope: string; color?: string }
 type State = { frame: number; target: number; held: number }
 
-// The press is a Button's, never a pointer listener's: a Client listening to
-// the pointer turns the whole terminal's mouse reports to pixels, which Claude
-// Code turns back into cells by the cell size the terminal reports, and VS
-// Code's terminal reports it rounded to a whole pixel, so every hover, click
-// and selection on screen drifts off what is drawn, further the further right
-// and down it is.
 const Chevron: ClientModule<Props, State> = (props, surface) => {
   const s = surface.state
   const target = props.isOpen ? props.frames.length - 1 : 0

@@ -53,10 +53,6 @@ const timingOf = (props: Props): Timing => {
 }
 const isSameTiming = (a: Timing, b: Timing) => (Object.keys(a) as (keyof Timing)[]).every(k => a[k] === b[k])
 
-// A Button, never a pointer listener (see CLAUDE.md, Clicks are Buttons, for
-// the drift one brings to every click on screen), so nothing tells the pill
-// the pointer has arrived: under the pointer the hover group reveals a second
-// layer over it, a Button too.
 const Pill: ClientModule<Props, State> = (props, surface) => {
   const s = surface.state
   const timing = timingOf(props)

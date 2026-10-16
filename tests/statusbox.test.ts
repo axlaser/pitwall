@@ -2,7 +2,7 @@ import type { AgentInfo, AgentStatus, ConfigValue, On, PromptChangeInput, Prompt
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { shortPath } from '../hooks/history'
-import { cellsOf } from '../hooks/register'
+import { CARD_INSET, cellsOf, FS_READ_MAX, paneInnerOf, ROW_MS } from '../hooks/register'
 import { SKINS, paletteOf, themeOf } from '../hooks/skin'
 
 const engine = (on: On, { opened, turns = () => 3, onClose }: { opened?: (true | undefined)[]; turns?: () => number; onClose?: () => Promise<void> } = {}) => {
@@ -91,11 +91,7 @@ const PANE = {
   view: {},
 }
 
-// The panel's bars: its body less the card's border and padding.
-const METER = PANE.bodyColumns - 6
-
-// The hooks module's fold ticker (ROW_MS).
-const BEAT = 24
+const METER = paneInnerOf(PANE.bodyColumns) - CARD_INSET
 
 test('each skin paints in hex, on a dark theme and a light one', () => {
   const colours = (value: unknown): string[] =>
@@ -218,8 +214,6 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 
   const MiB = 1024 * 1024
-  // Past it the transcript streams instead of being read whole (register's FS_READ_MAX).
-  const READ_MAX = 4 * MiB
   type Seed = { size: number; os: string; dir: string; folder: string }
   const seeds: Seed[] = [
     { size: 1024, os: 'Linux', dir: '/home/me/.claude', folder: '-home-me-repo' },
@@ -243,7 +237,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       { kind: 'seven_day', percentUsed: 20, resetsAt: resets(6 * 86_400) },
     ]
     on('session.usage', () => ({ value: { startedAt: at, context: { tokens: 100_000, window: 200_000, percent: 50 }, rateLimits, cost: { usd: 0.3 } } }))
-    on('session.model', () => ({ value: 'claude-opus-5-5[1m]' }))
+    const sessionModel = 'claude-opus-5-5[1m]'
+    on('session.model', () => ({ value: sessionModel }))
     on('session.version', () => ({ value: { version: '2.1.299', base: '2.1.299' } }))
     on('session.cwd', () => ({ value: '/home/me/repo' }))
     on('session.root', () => ({ value: '/home/me/repo' }))
@@ -263,7 +258,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.read', ($, e) => ({
       value: ends(e.path, `${dir === '/cfg' ? '/cfg' : '/home/me'}/.claude.json`)
         ? config
-        : isTranscript(e.path) && size <= READ_MAX
+        : isTranscript(e.path) && size <= FS_READ_MAX
           ? transcript
           : (Object.entries(catalogs).find(([name]) => ends(e.path, `${catalogDir}/${name}`))?.[1] ?? ''),
     }))
@@ -312,8 +307,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       sentEffort.push(e.effort)
       return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
     })
-    const step = async (effort: 'high' | 'xhigh') => {
-      for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort, messageCount: 1 })) {
+    const step = async (effort: 'high' | 'xhigh', model = sessionModel) => {
+      for await (const _ of $.turn.step({ turnId: 't', index: 0, model, effort, messageCount: 1 })) {
       }
       return sentEffort.at(-1)
     }
@@ -503,8 +498,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   for (const seed of seeds) test(`${surface}: the model chip's picker names its models from the catalog and draws a wire to the pick (${seedName(seed)})`, async ($, on) => {
     const { clock, sets, step } = await seeded($, on, seed)
-    // A request on the 200K model, so the picker offers the plain aliases before a 1M one
-    await step('high')
+    await step('high', 'claude-opus-5-5')
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
     const isOffered = async (key: string) => (await ui.find({ key })) !== undefined
     const isLit = async (key: string) => (await ui.find({ type: 'Text', in: key }))?.props.inverse === true
@@ -627,7 +621,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const clicked = async () => {
       afterWrites = []
       await fold()
-      await clock.advance(BEAT)
+      await clock.advance(ROW_MS)
       const seen = [...new Set(await Promise.all(afterWrites))]
       afterWrites = null
       return seen
@@ -1021,7 +1015,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await ui.press({ key: 'dismiss-a1' })
     const seen = [await slot()]
-    for (let beat = 0; beat < 20; beat++) seen.push(await clock.advance(BEAT).then(slot))
+    for (let beat = 0; beat < 20; beat++) seen.push(await clock.advance(ROW_MS).then(slot))
     const drawn = seen.filter(x => x !== undefined)
     const [margins, heights] = [drawn.map(([margin]) => margin), drawn.map(([, height]) => height ?? 0)]
     const out = PANE.bodyColumns - 2
@@ -1046,7 +1040,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
     const ui = await mountPane(surface, $)
     await ui.press({ key: 'dismiss-a1' })
-    await clock.advance(BEAT * 20)
+    await clock.advance(ROW_MS * 20)
     expect(await ui.find({ key: 'view-a1' })).toBeUndefined()
     await clock.advance(5000)
     expect(await ui.find({ key: 'view-a1' })).toBeUndefined()
@@ -1055,7 +1049,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.turn.start({ text: 'one more', turnId: 't2', agentId: 'a1' })
     const height = async () => (await ui.find({ key: 'slot-a1' }))?.props.height
     const opening = [await height()]
-    for (let beat = 0; beat < 20; beat++) opening.push(await clock.advance(BEAT).then(height))
+    for (let beat = 0; beat < 20; beat++) opening.push(await clock.advance(ROW_MS).then(height))
     const rolled = opening.filter((rows): rows is number => typeof rows === 'number')
     expect([rolled[0], rolled.every((rows, i) => i === 0 || rows >= rolled[i - 1]!), opening.at(-1)]).toEqual([0, true, undefined])
     expect([(await ui.find({ key: 'stop-a1' }))?.text, await ui.find({ key: 'dismiss-a1' })]).toEqual(['■ Stop', undefined])
@@ -1124,7 +1118,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const look = async () => [(await ui.find({ key: 'agent-a1' }))?.props.borderColor, (await ui.find({ key: 'stop-a1' }))?.text ?? null] as const
     const burn = async (beats: number) => {
       const seen: number[] = []
-      for (let beat = 0; beat < beats; beat++) seen.push(await clock.advance(BEAT).then(lit))
+      for (let beat = 0; beat < beats; beat++) seen.push(await clock.advance(ROW_MS).then(lit))
       return seen
     }
 
@@ -1325,7 +1319,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const slid: unknown[] = [await offset()]
     const sweep: unknown[][] = [await edged()]
     for (let beat = 0; beat < 10; beat++) {
-      await clock.advance(BEAT)
+      await clock.advance(ROW_MS)
       slid.push(await offset())
       sweep.push(await edged())
     }
@@ -1341,9 +1335,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.advance(500)
     expect(await chevron()).toBe(' ›')
     const out: unknown[][] = []
-    for (let beat = 0; beat < 9; beat++) out.push(await clock.advance(BEAT).then(edged))
+    for (let beat = 0; beat < 9; beat++) out.push(await clock.advance(ROW_MS).then(edged))
     expect([out, atClose]).toEqual([[...sweep].reverse().slice(1, -1), []])
-    await clock.advance(BEAT)
+    await clock.advance(ROW_MS)
     expect(atClose).toEqual([slid[0]])
 
     await ui.press({ key: 'chevron-panel' })
@@ -1353,7 +1347,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await clock.advance(144)
     const turned: unknown[] = [await offset()]
     await ui.press({ key: 'panel' })
-    for (let beat = 0; beat < 6; beat++) turned.push(await clock.advance(BEAT).then(offset))
+    for (let beat = 0; beat < 6; beat++) turned.push(await clock.advance(ROW_MS).then(offset))
     expect([opened, turned, atClose, await curtain()]).toEqual([[true, true], [9, 5, 3, 1, 0, 0, 0], [40], undefined])
   })
 
@@ -1379,7 +1373,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await ui.press({ key: 'pick-model-sonnet' })
     expect(await ui.find({ key: 'confirm' })).toBeUndefined()
-    await clock.advance(BEAT)
+    await clock.advance(ROW_MS)
     expect(cellsTo(await row(), 'pick-model-opus')).toBe(unmoved - 1)
     await clock.advance(976)
     const moved = await row()
