@@ -1,172 +1,214 @@
 <div align="center">
 
-# statusbox
+# pitwall
 
-**A live status box for [Claude Code](https://claude.ai/code), built as a plugin.**<br>
-Context, git and tokens above the prompt, a side panel of rate-limit usage, the session and its cost, the prompt cache, the advisor and agents, and alert sounds.
+**A pit wall for [Claude Code](https://claude.ai/code).**<br>
+Live telemetry above your prompt, a side panel for cost, cache and agents,<br>
+and fourteen themes that repaint all of Claude Code.
 
-[![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](#install)
-[![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](#install)
-[![Windows](https://img.shields.io/badge/Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white)](#install)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](#license)
+<img src="assets/hero.gif" alt="pitwall: the box above the prompt and the side panel while Claude and two subagents work" width="100%">
 
-![screenshot](assets/screenshot.png)
-
-[Install](#install) · [The box](#the-box) · [The side panel](#the-side-panel) · [Alert sounds](#alert-sounds) · [Settings](#settings) · [Troubleshooting](#troubleshooting)
+[Install](#install) · [The box](#the-box) · [The panel](#the-side-panel) · [Agents](#agents) · [Themes](#themes) · [Settings](#settings)
 
 </div>
 
+## Why
+
+Claude Code shows you what it's doing. pitwall shows you what it's **costing**, and lets you act on it.
+
+- **Cost by source.** The session's spend split into the main conversation, the advisor, subagents and background work.
+- **Cache countdown.** How long until the prompt cache goes cold, and what your next message costs either way.
+- **Rate limits with pace.** Whether you're ahead of or behind an even pace, and when each window resets.
+- **Agents you can stop.** A card per subagent with its cost and tokens, and a stop button.
+- **One-click model and effort.** Switch from the box, no slash command.
+- **Fourteen themes.** They repaint Claude Code itself, the chat history and your terminal's colours.
+- **Nothing leaves your machine.** No network calls. It reads only what Claude Code already writes.
+
+Not a status line: a status line is a script run on every refresh. pitwall is a plugin that draws into Claude Code and reacts to its events, so every figure is live.
+
 ## Install
 
-At the prompt of a Claude Code session (2.1.299 or later):
-
 ```text
-/plugin install statusbox --marketplace axlaser/statusbox
+/plugin install pitwall --marketplace axlaser/pitwall
 ```
 
-Answer `y` to add the marketplace, then pick a scope (user is the first one offered). The box appears in that session straight away, and in every session after it.
+Needs Claude Code 2.1.299 or later. Restart once to get the themes in `/theme`.
 
-From a shell instead:
+<details>
+<summary>Shell, desktop app, update, uninstall</summary>
 
-```bash
-claude plugin install statusbox --marketplace axlaser/statusbox
-```
+| | |
+|---|---|
+| Shell | `claude plugin install pitwall --marketplace axlaser/pitwall` |
+| Desktop app | **+** by the prompt, **Plugins**, **Add marketplace** `axlaser/pitwall`, **Add plugin** |
+| Update | `claude plugin update pitwall`, then `/reload-plugins` |
+| Uninstall | `/plugin uninstall pitwall` |
 
-In the desktop app, where `/plugin` doesn't run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `axlaser/statusbox`, then **Add plugin**.
-
-**Update:** `claude plugin update statusbox`, then `/reload-plugins` in a running session.
-
-**Uninstall:** `/plugin uninstall statusbox`.
-
-**Coming from claude-statusline?** The Rust binary this replaced registered itself in `~/.claude/settings.json`. Remove it first, or you'll get two status lines and every alert twice:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/axlaser/statusbox/v1.0.0-rc.2/install/uninstall.sh | bash
-```
-
-```powershell
-irm https://raw.githubusercontent.com/axlaser/statusbox/v1.0.0-rc.2/install/uninstall.ps1 | iex
-```
+</details>
 
 ## The box
 
-A band above the prompt, redrawn as things happen rather than on a timer. Its figures roll up or down to each new value.
+<img src="assets/box.png" alt="The box: repo, model and tokens rows" width="100%">
 
-| Row | Contents |
-|-----|----------|
-| **repo** | Directory (shortened to `~`), branch, `↑ahead` `↓behind`, `+insertions` `-deletions` `~untracked`, `⊟ stashes`, and `SIDEBAR ›` to open or close the side panel (its contents slide in and out behind an edge that sweeps with them, and its chevron turns to match). Labelled **project** outside a git repo. Click the path to open the repository's web page. |
-| **model** | Context bar with %, `used/window` tokens, model `▾`, reasoning effort `▾`, and `✓ Ready` or Claude's working animation. |
-| **tokens** | Session totals for `in`, `cache↑` (writes), `cache↓` (reads) and `out`, with the current turn's share in brackets, counted as each request lands. |
+| Row | Shows |
+|-----|-------|
+| **repo** | Path, branch, ahead/behind, insertions/deletions, stashes, and `SIDEBAR ›` |
+| **model** | Context bar, tokens used, model `▾`, effort `▾`, and Claude's working animation |
+| **tokens** | Session totals in, out and cached, with this turn's share |
 
-Rows with nothing to show are hidden. In a narrow terminal, or beside a wide side panel, the box narrows with the column: the context bar shrinks first, then each row drops what it can spare (`used/window`, the turn's share, the git counts) and shortens the rest (the path to its last folders, `xhigh effort` to `xhigh`, a long branch name). A pick on a second line of choices is highlighted without the line to it.
+<img src="assets/pickers.gif" alt="Picking Sonnet and then medium effort from the box, each confirmed, then the box glowing while Claude works" width="100%">
 
-**Reading it**
+Click the model or the effort to open its picker, pick, and `✓ Confirm`.
 
-- **Context bar:** a line that shades from green to yellow at 60% and red from 85%. It glides to each new reading, and a soft glow runs along it while Claude works.
-- **Model and effort:** click either (or its `▾`) and the box rolls open with its choices rippling in, centred, a line unrolling from it to the one in force, which is highlighted. Click another and the line glides over to it, its arrowhead leading the way; `✓ Confirm`, to the right of the choices, applies it (the row slides left to make room where it has to; click the chip again to back out). Switching between the two pickers slides the line across. The model list is the one in `/config` without its Default, Haiku first, then Sonnet, Opus and Fable, each model named by its version, and picking one switches the model the same way, keeping the context window you are on. The effort pick lasts for this session and saves nothing; in its picker each level plays a flourish of its own as the row opens and again while the pointer rests on it, from a slow ripple at low to a flare at max. In the model picker each model has a colour of its own, and a sweep of light runs across its name the same way. The choice picked keeps playing for as long as it stays picked. The box shows the model and the effort in their picker colours, and both glisten, `▾` and all, while Claude works.
-- **Rate limits:** `5h 42% ⇡3% (1h)` means 42% used, 3 points ahead of an even pace, resetting in 1 hour. `⇣` means you're under pace. Rate limits only show on Pro and Max plans.
-- **First output:** green under 10 s, yellow under 30 s, red above.
-- **Compact:** past 85% context, a `compact context` button appears under the box.
-- **Pasted images (Windows):** paste a screenshot with **Alt+V** and `#N open ↗` shows above the box while `[Image #N]` is in your draft. Click it to see the image full size.
+<details>
+<summary>More about the box</summary>
 
-**Keys:** `ctrl+x ctrl+a` hides and shows the box, `ctrl+x tab` moves the focus into it.
+- The context bar turns yellow at 60% and red at 85%. Past 85%, a `compact context` button appears.
+- The box narrows with the terminal, dropping its least important figures first.
+- **Windows:** paste a screenshot with **Alt+V** and `#N open ↗` opens it full size.
+- `ctrl+x ctrl+a` hides and shows the box.
+
+</details>
 
 ## The side panel
 
-In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript. Open it with `/sidebar` or `SIDEBAR ›` in the box, which closes it again too.
+<img align="right" src="assets/panel.png" alt="The side panel" width="38%">
 
-Click a section's name to fold it, smoothly, down to one line that sums it up (`▸ USAGE ── 5-hour 10% · 7-day 5%`), and again to open it. Folded sections stay folded in later sessions. Your Claude Code version sits at the bottom, with a link to the changelog.
+Docks beside the transcript in fullscreen mode. Open it with `/sidebar` or `SIDEBAR ›`.
 
-- **Usage:** the 5-hour and 7-day rate limits, each with a bar, a tick where a steady pace would put you by now, and the time to its reset.
-- **Session:** messages, session length and how long the latest turn took to its first output and in all (counting up while Claude works), the size of its transcript on disk, in auto mode how many tool calls its classifier allowed and blocked, then the session's cost: its total, and a bar split by who asked (the main conversation, the advisor, subagents, background work such as titles and compaction, and `earlier`, what the session cost before the plugin saw it), with each part's dollars and share below.
-- **Cache:** once Claude has answered, whether the prompt cache still holds the conversation. **Warm**, the next message reads it back for a small part of the input price, and a countdown shows how long it stays warm without a message (5 minutes or an hour, whichever Claude Code asked for). **Cold**, it writes the whole context to the cache again at more than the full input price. The card shows what the next message pays for that and what it would pay the other way. Switching model or compacting makes it cold.
-- **Advisor:** once the advisor tool has been used, a card with its model, calls, tokens and cost, and a bar for its share of the session's cost. Advice your agents asked for counts too, with its own `agents` row, and each agent's card shows the advice it asked for.
-- **Agents:** a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, and its prompt cache's countdown, with Claude's animation while it works. **■ Stop** on a running agent's card stops it once you press it again (**■ Confirm**), a red line running round the card as it stops, and **✕ dismiss** slides a finished one out of the panel; finished agents leave the same way on their own a minute after they end, and come back if Claude resumes them. A finished agent's cache countdown is dimmed and reads "if resumed": it is how long a resume would still find its prompt cached. Click an agent's name to watch its transcript in the main view, and **‹ main conversation** at the top of the panel to go back. With statusbox on, Claude Code's own agent rows under the prompt are hidden, since the panel shows them; a `subagentStatusLine` of your own in `settings.json` takes precedence.
+| Card | Shows |
+|------|-------|
+| **Usage** | 5-hour and 7-day limits, a pace tick, time to reset |
+| **Session** | Messages, turn times, transcript size, total cost and its split |
+| **Cache** | Warm or cold, the countdown, the next message's cost |
+| **Advisor** | Calls, tokens, cost and share |
+| **Agents** | A card per subagent |
 
-**Keys:** `ctrl+x ←` and `ctrl+x →` widen and narrow it, `ctrl+x x` closes it. Once you click a header, Return folds and opens it. Once closed it stays closed until you open it again.
+Click a section's name to fold it to one line.
 
-However narrow you make it, each card keeps its rows on one line inside its border: a row shortens its wording and drops its lesser figures first (the pace, a cost's share, a token count), a label is cut off with `…` only after that, and an agent's figures stack into one column.
+<br clear="right">
 
-Claude Code docks panels on the right, and only in fullscreen mode at 110 columns or wider; a plugin can't move it to the left.
+<details>
+<summary>Keys and sizing</summary>
 
-## Alert sounds
+- `ctrl+x ←` / `ctrl+x →` resize it, `ctrl+x x` closes it.
+- Needs fullscreen mode (`"tui": "fullscreen"`) and 110 columns or more.
+- At any width each card keeps its rows on one line.
 
-A sound for the moments you'd otherwise miss.
+</details>
 
-| Event | When |
-|-------|------|
-| Permission request | Claude is waiting for your approval |
-| Finished | Claude finishes responding. Not while a subagent it's waiting on is still running. |
-| Compaction start / done | Context compaction begins or ends |
-| Context high | Context usage reaches 70%, once until it drops below again |
-| Rate limit | 5-hour or 7-day usage reaches 80%, once for each until it resets |
+## Agents
 
-| Platform | Sounds |
-|----------|--------|
-| Windows | Built in (Windows Media sounds) |
-| macOS | `afplay` with the system sounds |
-| Linux | `paplay`, `ffplay` or `ogg123` with the freedesktop sounds |
+<img align="right" src="assets/agents.gif" alt="Folding the panel's cards, then stopping an agent from its card and dismissing it" width="38%">
+
+Every subagent gets a card: its task, model, effort, tokens, cost and cache countdown, live while it works.
+
+- **■ Stop**, then **■ Confirm**, stops a running agent.
+- **Click its name** to watch its transcript; **‹ main conversation** goes back.
+- **✕ dismiss** clears a finished one. They also leave on their own after a minute, and slide back in if Claude resumes them.
+
+<br clear="right">
+
+## Themes
+
+<img src="assets/themes.gif" alt="One live session, two agents working, in each of the fourteen themes" width="100%">
+
+Pick one in `/theme`. Each comes in dark and light: Tokyo Night, Dracula, Catppuccin, Gruvbox, Nord, Noir and Mono.
+
+A theme paints Claude Code's own text and diffs, the box and panel, the chat history (tool calls as coloured rows, tables as cards), and the terminal's background and text colour. Any other theme keeps pitwall's classic look.
+
+<details>
+<summary>Terminal colours on Windows, or terminals without OSC 10 and 11</summary>
+
+pitwall sets the background and text colour itself on macOS and Linux (VS Code, iTerm2, Ghostty, kitty, WezTerm). Elsewhere, set them by hand. In VS Code's `settings.json`:
+
+```json
+"workbench.colorCustomizations": { "terminal.background": "#1a1b26", "terminal.foreground": "#c0caf5" }
+```
+
+| Theme | Background | Text |
+|-------|------------|------|
+| Tokyo Night | `#1a1b26` | `#c0caf5` |
+| Tokyo Day | `#e1e2e7` | `#3760bf` |
+| Dracula | `#282a36` | `#f8f8f2` |
+| Alucard | `#fffbeb` | `#1f1f1f` |
+| Catppuccin Mocha | `#1e1e2e` | `#cdd6f4` |
+| Catppuccin Latte | `#eff1f5` | `#4c4f69` |
+| Gruvbox Dark | `#282828` | `#ebdbb2` |
+| Gruvbox Light | `#fbf1c7` | `#3c3836` |
+| Nord | `#2e3440` | `#d8dee9` |
+| Nord Light | `#eceff4` | `#2e3440` |
+| Noir | `#0a0a0a` | `#e8e8e8` |
+| Noir Light | `#ffffff` | `#1a1a1a` |
+| Mono | `#1c1c1c` | `#d0d0d0` |
+| Mono Light | `#f2f2f2` | `#2a2a2a` |
+
+If Claude Code crashes, `printf '\e]110\a\e]111\a'` restores your own colours.
+
+</details>
 
 ## Settings
 
-In `/config`, under statusbox:
+In `/config`, under pitwall:
 
-| Setting | Default | |
-|---------|---------|---|
-| Alert sounds | on | |
-| Context alert (%) | 70 | 0 turns it off |
-| Rate limit alert (%) | 80 | 0 turns it off |
-| Skin the chat history | on | With a statusbox theme, draws the chat in its colours too |
-| Paint the terminal background | on | With a statusbox theme, sets the terminal's background to its colour |
+| Setting | Default |
+|---------|---------|
+| Alert sounds | on |
+| Context alert (%) | 70, 0 turns it off |
+| Rate limit alert (%) | 80, 0 turns it off |
+| Skin the chat history | on |
+| Paint the terminal background | on |
 
-**Themes.** statusbox adds fourteen themes to `/theme`: Tokyo Night and Tokyo Day, Dracula and Alucard, Catppuccin Mocha and Latte, Gruvbox Dark and Light, Nord and Nord Light, Noir and Noir Light (black and white, with red only for danger), and Mono and Mono Light (greys only). Picking one paints everything in its palette: Claude Code's own text, inline code, diffs, prompt border and spinner, plus the box, the side panel, the chat history and the terminal's background. With any other theme, Claude Code's own included, statusbox keeps its classic look, in your terminal theme's colours. Switching theme repaints at once. Claude Code reads the themes as it starts, so after installing or updating statusbox, restart it to see them.
-
-With a statusbox theme, statusbox draws the chat history too, in the terminal. Each tool call gets a row in its kind's colour: reads, edits, shell commands, web, agents and MCP tools. The row shows what it acted on, the lines an edit adds and removes, and how long it took. Your prompts sit in a rounded outline, and Claude's replies open on the skin's bullet, with tables drawn as banded cards. Tool output, grouped calls and the text inside a reply keep Claude Code's own drawing, in the skin's theme. Turn **Skin the chat history** off to leave the chat to Claude Code.
-
-**The background.** Claude Code draws on your terminal's own background, which no theme can change. So with a statusbox theme, statusbox sets the terminal's background to the theme's while Claude Code runs, and puts yours back when you exit. This works on macOS and Linux, in terminals that take the OSC 11 escape sequence: VS Code's, iTerm2, Ghostty, kitty and WezTerm. Apple Terminal ignores it. If Claude Code crashes, the colour stays until you open a new terminal or run `printf '\e]111\a'` in that one.
-
-On Windows, or in a terminal that ignores it, set the background yourself. In VS Code, add this to `settings.json`, with your theme's colour from the table below:
-
-```json
-"workbench.colorCustomizations": { "terminal.background": "#1a1b26" }
-```
-
-| Dark theme | Background | Light theme | Background |
-|------------|------------|-------------|------------|
-| Tokyo Night | `#1a1b26` | Tokyo Day | `#e1e2e7` |
-| Dracula | `#282a36` | Alucard | `#fffbeb` |
-| Catppuccin Mocha | `#1e1e2e` | Catppuccin Latte | `#eff1f5` |
-| Gruvbox Dark | `#282828` | Gruvbox Light | `#fbf1c7` |
-| Nord | `#2e3440` | Nord Light | `#eceff4` |
-| Noir | `#0a0a0a` | Noir Light | `#ffffff` |
-| Mono | `#1c1c1c` | Mono Light | `#f2f2f2` |
+Sounds play when Claude needs permission, finishes, compacts, or crosses an alert threshold.
 
 ## Troubleshooting
 
-**Nothing shows.** Run `/plugin` and check statusbox is installed and enabled, and that `claude --version` is 2.1.299 or later. A hook that fails shows a dim `statusbox: …` line in the transcript; `claude --debug` writes the full reason to the debug log.
+<details>
+<summary><b>Nothing shows</b></summary>
 
-**A skin's colours look washed out.** VS Code's terminal shifts colours to keep them readable (`terminal.integrated.minimumContrastRatio`, 4.5 by default). Set it to 1 to see the skin's own colours.
+Check `/plugin` lists pitwall as enabled and `claude --version` is 2.1.299 or later. Failures show as a dim `pitwall: …` line in the transcript; `claude --debug` logs the reason.
 
-**The screen is garbled.** Resizing the terminal redraws it. For a key that does the same, bind Claude Code's `app:redraw` (it has none by default) in `~/.claude/keybindings.json`:
+</details>
+
+<details>
+<summary><b>The box disappeared</b></summary>
+
+`ctrl+x ctrl+a` hides it. Press it again.
+
+</details>
+
+<details>
+<summary><b>No side panel</b></summary>
+
+It needs fullscreen mode and 110 columns. `/sidebar` says why when it can't open.
+
+</details>
+
+<details>
+<summary><b>Theme colours look washed out</b></summary>
+
+Set VS Code's `terminal.integrated.minimumContrastRatio` to 1.
+
+</details>
+
+<details>
+<summary><b>The screen is garbled</b></summary>
+
+Resize the terminal, or bind `app:redraw` in `~/.claude/keybindings.json`:
 
 ```json
 { "bindings": [{ "context": "Global", "bindings": { "ctrl+x r": "app:redraw" } }] }
 ```
 
-**The box is gone but the plugin is enabled.** `ctrl+x ctrl+a` hides it; press it again.
+</details>
 
-**The side panel doesn't appear.** It needs fullscreen mode and 110 columns or more. `/sidebar` says so when it can't place the panel.
+<details>
+<summary><b>No sounds</b></summary>
 
-**No sounds.** Check the setting above, your system volume, and on Linux that one of `paplay`, `ffplay` or `ogg123` is installed.
+Check the setting and your volume. Linux needs `paplay`, `ffplay` or `ogg123`.
 
-## How it works
-
-statusbox is a Claude Code plugin made of function hooks: the box, the panel and the alerts react to the engine's own events (each request, each turn, compaction, permission prompts) instead of running a program on every refresh. The box draws above the prompt through `ui.render`, the panel is a docked `Pane`, and the animations are small client modules the terminal runs locally.
-
-It reads only what Claude Code already writes: the session's transcript, once at start and again after a turn that used the advisor, and an agent's transcript after it used the advisor. After each turn it runs `git` for the repo row. It makes no network calls, and the cost figures are Claude Code's own.
-
-This repository was `claude-statusline`, a Rust binary; that version is at [v1.0.0-rc.2](https://github.com/axlaser/statusbox/tree/v1.0.0-rc.2).
+</details>
 
 ## License
 
-MIT. The Claude icon in `assets/` is from [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Claude_AI_symbol.svg) (public domain).
+[MIT](LICENSE).

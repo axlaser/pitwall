@@ -168,7 +168,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await clock.advance(4300)
     await $.session.append(responseRow('text'))
     await step(0)
-    const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const band = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     expect((await band.find({ type: 'Text', in: 'n-in' }))?.text).toBe('1.5K')
     await band.unmount()
     await clock.advance(2000)
@@ -193,7 +193,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.prompt.submit({ ...typed, text: 'hi' })
     await $.prompt.submit({ ...typed, text: '/effort max', command: { name: 'effort', args: 'max' } })
 
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
 
     expect(await ui.find({ type: 'Text', text: '/200K' })).toBeDefined()
@@ -203,7 +203,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'compact' })).toBeUndefined()
 
     for (const key of ['n-messages', 'n-first', 'n-reply', 'n-cost']) expect(await ui.find({ key })).toBeUndefined()
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     for (const text of ['5-hour', ' message', 'first output ', 'reply ']) {
       expect((await pane.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     }
@@ -339,12 +339,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const { size } = seed
     const cache = async (ui: { find: (q: { type: 'Text'; in: string }) => Promise<{ text?: string } | undefined> }) =>
       Object.fromEntries(await Promise.all(['next', 'tokens', 'other'].map(async key => [key, (await ui.find({ type: 'Text', in: `n-cache-${key}` }))?.text])))
-    const cold = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const cold = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     for (const text of ['○ cold', 'lasts 5m idle', ' to rewrite ']) expect((await cold.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     expect(await cache(cold)).toEqual({ next: '$0.5000', tokens: '100.0K', other: '$0.0200' })
     await cold.unmount()
     await $.telemetry.log(apiRequest({ query_source: 'repl_main_thread', cost_usd: 0.25, model: 'claude-opus-5-5', cache_creation_1h_tokens: 1000, duration_ms: 90_000 }))
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
 
     for (const text of ['~/repo', 'main', '↑2', '+5', '-1', '~1', '┏━', '┣━', '┼']) {
@@ -361,7 +361,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     for (const [key, text] of Object.entries(want)) expect(`${key} ${await figure(key)}`).toBe(`${key} ${text}`)
     expect(await ui.find({ key: 'n-advisor-calls' })).toBeUndefined()
 
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     expect(await pane.find({ type: 'Text', text: '✶ Fable 6' })).toBeDefined()
     const onDisk = size < MiB ? '1.0 KB' : '5.0 MB'
     expect((await pane.find({ type: 'Text', text: onDisk })) ? onDisk : `missing: ${onDisk}`).toBe(onDisk)
@@ -418,7 +418,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   test(`${surface}: the effort chip's picker flares its levels, confirms one through /effort and folds`, async ($, on) => {
     const { clock, ran, step } = await seeded($, on, seeds[0] as Seed)
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const isOffered = async (key: string) => (await ui.find({ key })) !== undefined
     const isLit = async (key: string) => (await ui.find({ type: 'Text', in: key }))?.props.inverse === true
     const unfold = () => clock.advance(1000)
@@ -499,7 +499,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   for (const seed of seeds) test(`${surface}: the model chip's picker names its models from the catalog and draws a wire to the pick (${seedName(seed)})`, async ($, on) => {
     const { clock, sets, step } = await seeded($, on, seed)
     await step('high', 'claude-opus-5-5')
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const isOffered = async (key: string) => (await ui.find({ key })) !== undefined
     const isLit = async (key: string) => (await ui.find({ type: 'Text', in: key }))?.props.inverse === true
     const unfold = () => clock.advance(1000)
@@ -600,7 +600,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       return r
     })
     await $.session.measure({ context: { tokens: 1, window: 200_000, percent: 1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 23 }], changed: ['rateLimits'] })
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const fold = () => pane.press({ key: 'fold-USAGE' })
     const heldTo = (node: unknown): number[] => {
       const el = node as { props?: { overflow?: string; height?: number }; children?: unknown[] }
@@ -653,7 +653,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.telemetry.log({ to: 'collector', event: 'tool_result', attributes: { cost_usd: 9 }, loggedAt: '2026-10-14T00:00:00.000Z' })
     await $.session.measure({ context: { tokens: 1, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0.4 }, changed: ['cost'] })
 
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
 
     const want = { main: '$0.2500', 'main-share': '63%', agents: '$0.1000', 'agents-share': '25%', background: '$0.0100', earlier: '$0.0400', 'earlier-share': '10%' }
     for (const [key, text] of Object.entries(want)) {
@@ -679,7 +679,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await record('agent:builtin:Explore', 0.5)
     await record('agent:builtin:Explore', 0.5)
     const shares = async () => {
-      const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+      const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
       const keys = ['total', 'main-share', 'agents-share', 'background-share']
       const texts = await Promise.all(keys.map(async key => (await ui.find({ type: 'Text', in: `n-cost-${key}` }).catch(() => undefined))?.text))
       await ui.unmount()
@@ -693,7 +693,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a figure rolls to its new value, holding the cells it settles in`, async ($, on) => {
     engine(on)
     await $.session.measure({ context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits: [], changed: ['context'] })
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const used = async () => (await ui.find({ type: 'Text', in: 'n-used' }))?.text ?? ''
     expect(await used()).toBe('84.0K')
 
@@ -714,7 +714,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the bar glides to the reading and Claude frolics in one spot while it works`, async ($, on) => {
     engine(on)
     await $.session.measure({ context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits: [], changed: ['context'] })
-    const working = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true } })
+    const working = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true } })
     const has = async (ui: typeof working, text: string, at: string) => ((await ui.find({ type: 'Text', text, in: at })) ? text : `missing: ${text}`)
 
     expect(await has(working, '━━━━', 'bar')).toBe('missing: ━━━━')
@@ -742,7 +742,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const letters = brightest.filter(text => /^[A-Za-z]$/.test(text))
     expect([letters.sort().join(''), brightest.some(text => ['·', '✢', '✶', '✻', '✽'].includes(text))]).toEqual([[...'Working'].sort().join(''), true])
 
-    const idle = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const idle = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const colorOf = async (text: RegExp) => (await idle.find({ type: 'Text', text, in: 'claude' }))?.props.color
     expect([await has(idle, 'Ready', 'claude'), await colorOf(/^✓$/), await colorOf(/^Ready$/)]).toEqual(['Ready', 'green', 'green'])
   })
@@ -779,13 +779,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await step(1)
     await record(1, 0.1)
     await clock.advance(70_000)
-    const busy = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const busy = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     expect(await busy.find({ type: 'Text', text: 'Working', in: 'working-a1' })).toBeDefined()
     await busy.unmount()
     status = 'completed'
     await $.turn.complete({ answer: 'done', durationMs: 70_000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
 
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     for (const text of ['✓ done', 'Explore', 'Org pricing', ' 1m10s', 'Opus 5.5 · xhigh', ' calls', 'in', 'out', 'cache↑', 'cache↓', 'context', 'cost']) {
       expect((await ui.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     }
@@ -796,7 +796,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const P = paletteOf('classic', false)
     const colours = await Promise.all(['cacheWrite', 'cacheRead'].map(async key => (await ui.find({ type: 'Text', in: `n-a1-${key}` }))?.props.color))
     expect([colours, P.warn === P.info]).toEqual([[P.warn, P.info], false])
-    const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const band = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     expect(await band.find({ type: 'Text', text: 'Org pricing' })).toBeUndefined()
   })
 
@@ -817,7 +817,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     for (const _ of ['a1', 'a2']) {
       await $.telemetry.log(apiRequest({ query_source: 'agent:builtin:Explore', cost_usd: 0.25, input_tokens: 10, output_tokens: 3000, cache_read_tokens: 40_000, cache_creation_tokens: 2000 }))
     }
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const costs = await Promise.all(['a1', 'a2'].map(async id => (await ui.find({ type: 'Text', in: `n-${id}-usd` }).catch(() => undefined))?.text))
     expect(costs).toEqual(['$0.2500', '$0.2500'])
   })
@@ -837,7 +837,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
     await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
 
-    const main = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const main = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     expect([(await main.find({ key: 'view-a1' }))?.text, await main.find({ key: 'view-main' })]).toEqual(['Explore ›', undefined])
     type Node = { type?: string; props?: { color?: string }; hover?: unknown; children?: unknown[] }
     const textOf = (node: Node | undefined, text: string): Node | undefined =>
@@ -853,7 +853,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await main.press({ key: 'view-a1' })
     await main.unmount()
 
-    const inAgent = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: { ...PANE, view: { agentId: 'a1' } } })
+    const inAgent = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: { ...PANE, view: { agentId: 'a1' } } })
     expect((await inAgent.find({ key: 'view-a1' }))?.text).toBe('Explore ‹')
     expect([await inAgent.find({ type: 'Text', text: 'viewing Explore' }), await inAgent.find({ type: 'Text', text: '● viewing' })].map(Boolean)).toEqual([true, true])
     const viewed = (await inAgent.drawn()) as Node
@@ -865,7 +865,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await inAgent.unmount()
     expect([asked, toasts]).toEqual([['a1', undefined, undefined, 'a2'], ['that agent is not one the tasks list shows']])
 
-    const after = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const after = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     expect([await after.find({ key: 'view-a2' }), await after.find({ type: 'Text', text: 'general-purpose' })].map(Boolean)).toEqual([false, true])
   })
 
@@ -876,11 +876,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     let lists = 0
     on('agent.list', () => (lists++, { value: list }))
     let writes = 0
-    on('state.set', { plugin: 'statusbox', key: 'agents' }, ($, e, next) => (writes++, next(e)))
+    on('state.set', { plugin: 'pitwall', key: 'agents' }, ($, e, next) => (writes++, next(e)))
     await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
     list = [{ ...list[0]!, status: 'completed' }]
     await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     expect(await ui.find({ type: 'Text', text: '✓ done' })).toBeDefined()
 
     list = []
@@ -902,7 +902,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('agent.list', () => (lists++, { value: [agent] }))
     return { clock, agent, lists: () => lists }
   }
-  const mountPane = (surface: 'terminal' | 'desktop', $: Engine) => $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+  const mountPane = (surface: 'terminal' | 'desktop', $: Engine) => $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
 
   test(`${surface}: two agents starting at once both stay running, whichever list read lands last`, async ($, on) => {
     engine(on)
@@ -955,7 +955,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect([armed?.text, calls.length]).toEqual(['■ Confirm', 0])
     await ui.press({ key: 'stop-a1' })
     expect(calls.map(call => [call.tool, call.task_id])).toEqual([['TaskStop', 'a1']])
-    expect(calls[0]?.consent).toEqual(expect.stringContaining('"■ Confirm" in the statusbox panel to stop agent a1'))
+    expect(calls[0]?.consent).toEqual(expect.stringContaining('"■ Confirm" in the pitwall panel to stop agent a1'))
     expect([await ui.find({ key: 'stop-a1' }), (await ui.find({ key: 'dismiss-a1' }))?.text, await ui.find({ type: 'Text', text: '✗ killed' })].map(Boolean)).toEqual([
       false,
       true,
@@ -1190,7 +1190,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     mock.clock(on)
     const decision = (attributes: Record<string, string>) =>
       $.telemetry.log({ to: 'collector', event: 'tool_decision', attributes: { tool_name: 'Bash', ...attributes }, loggedAt: '2026-10-15T00:00:00.000Z' })
-    const before = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const before = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     expect(await before.find({ type: 'Text', text: 'auto mode' })).toBeUndefined()
     await before.unmount()
 
@@ -1199,7 +1199,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await decision({ decision: 'reject', source: 'config', classifier_verdict: 'block', permission_mode: 'auto' })
     await decision({ decision: 'reject', source: 'config', classifier_verdict: 'unavailable', permission_mode: 'auto' })
     await decision({ decision: 'accept', source: 'user_temporary', permission_mode: 'default' })
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     expect(await ui.find({ type: 'Text', text: 'auto mode' })).toBeDefined()
     const counts = await Promise.all(['allowed', 'blocked'].map(async key => (await ui.find({ type: 'Text', in: `n-session-${key}` }))?.text))
     expect(counts).toEqual(['2', '1'])
@@ -1219,7 +1219,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('process.run', ($, e) => (ran.push([...e.argv]), {
       value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     }))
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const settle = async (want: boolean) => {
       let isShown = Boolean(await ui.find({ key: 'open-image-1' }))
       for (let i = 0; i < 50 && isShown !== want; i++) isShown = Boolean(await ui.find({ key: 'open-image-1' }))
@@ -1234,7 +1234,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Raster' })).toBeUndefined()
     expect(ran.filter(argv => argv[0] === 'powershell').length).toBe(1)
     await ui.press({ key: 'open-image-1' })
-    expect(ran.at(-1)).toEqual(['rundll32', 'url.dll,FileProtocolHandler', 'C:\\Temp\\statusbox-abc-1.png'])
+    expect(ran.at(-1)).toEqual(['rundll32', 'url.dll,FileProtocolHandler', 'C:\\Temp\\pitwall-abc-1.png'])
 
     draft = 'look '
     await edit({ origin: { kind: 'composer' }, text: 'look [Image #1] ', cursor: 16, start: 5, end: 16, inputText: '' })
@@ -1266,7 +1266,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       }
       return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     })
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const settle = async (key: string, want: boolean) => {
       let isShown = Boolean(await ui.find({ key }))
       for (let i = 0; i < 50 && isShown !== want; i++) isShown = Boolean(await ui.find({ key }))
@@ -1302,8 +1302,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('session.root', () => ({ value: '/home/me/repo' }))
     on('session.id', () => ({ value: 's1' }))
 
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const offset = async () => (await pane.find({ key: 'slide' }))?.props.marginLeft
     const curtain = async () => (await pane.find({ key: 'curtain' }))?.props.left
     const edged = async () => [await offset(), await curtain()]
@@ -1361,7 +1361,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const sets: unknown[] = []
     on('config.set', ($, e) => (sets.push(e.value), { value: e.value }))
     on('session.model', () => ({ value: 'claude-sonnet-6' }))
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const lines = async () => ((await frameOf(ui)) as { children: unknown[] }).children.filter(Boolean)
     const widths = async () => new Set((await lines()).map(cells))
     const width = await widths()
@@ -1407,7 +1407,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.stat', ($, e) => ({ value: { kind: 'file', size: isTranscript(e.path) ? transcript.length : 0, mtimeMs: 0, isLink: false } }))
     on('fs.read', ($, e) => ({ value: isTranscript(e.path) ? transcript : '' }))
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
     expect([await figure('out'), await ui.find({ key: 'effort', in: 'chip-effort' }).catch(() => undefined)]).toEqual(['0', undefined])
 
@@ -1434,7 +1434,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.list', () => ({ value: [] }))
     on('fs.stat', ($, e) => ({ value: { kind: 'file', size: isTranscript(e.path) ? transcript.length : 0, mtimeMs: 0, isLink: false } }))
     on('fs.read', ($, e) => (isTranscript(e.path) && reads++, { value: isTranscript(e.path) ? transcript : '' }))
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
     const shown = async () => [
       (await ui.find({ key: 'model', in: 'chip-model' }))?.text,
@@ -1466,7 +1466,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.list', () => ({ value: [] }))
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
     const colours = async (isWorking: boolean, chip = 'chip-model') => {
-      const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, isWorking } })
+      const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: { ...BAND, isWorking } })
       const [seen, turned] = [new Set<unknown>(), new Set<unknown>()]
       let isBold = false
       for (let t = 0; t < 1200; t += 60) {
@@ -1499,7 +1499,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.list', () => ({ value: [] }))
     on('command.run', () => ({ text: '' }))
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     const chip = async () => (await ui.find({ key: 'effort', in: 'chip-effort' }))?.text
     expect(await chip()).toBe('high effort')
 
@@ -1520,7 +1520,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     engine(on)
     mock.clock(on)
     on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const has = async (text: string) => (await pane.find({ type: 'Text', text })) !== undefined
     expect([await has('Nothing cached in this session yet.'), await has('● warm')]).toEqual([true, false])
     await $.telemetry.log(apiRequest({ query_source: 'repl_main_thread', cost_usd: 0.01, model: 'claude-opus-5-5' }))
@@ -1542,7 +1542,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       { kind: 'seven_day', percentUsed: 20, resetsAt: resets(6 * 86_400) },
     ])
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const shown = async () => Promise.all(['five_hour', 'seven_day'].map(async kind => (await pane.find({ type: 'Text', in: `n-usage-${kind}` }))?.text))
     expect([await shown(), await pane.find({ type: 'Text', text: 'resets in 6d' }) !== undefined]).toEqual([['0%', '20%'], true])
 
@@ -1559,11 +1559,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.exists', () => ({ value: false }))
     on('fs.list', () => ({ value: [] }))
     const engineRow = { label: 'Theme', kind: 'choice' as const, isLocked: false, provider: { plugin: 'engine', tier: 'core' as const } }
-    on('config.list', () => ({ value: [{ key: 'theme', value: 'custom:statusbox:tokyo-night-dark', ...engineRow }] }))
+    on('config.list', () => ({ value: [{ key: 'theme', value: 'custom:pitwall:tokyo-night-dark', ...engineRow }] }))
     on('config.set', ($, e) => ({ value: e.value }))
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
-    const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const band = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const inkIn = async (key: string) => (await band.findAll({ type: 'Text', in: key })).find(text => text.props.color)?.props.color
     const card = async (color: string) => (await pane.findAll({ type: 'Box' })).some(box => box.props.borderColor === color)
     const shown = async (accent: string) => [
@@ -1576,10 +1576,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await shown('#7aa2f7')).toEqual(['#7aa2f7', '#e0af68', '#9ece6a', true])
     const person = { origin: { kind: 'composer' as const } }
     const pick = (value: string, previous: string) => $.config.set({ key: 'theme', value, previous, provider: engineRow.provider, ...person })
-    await pick('custom:statusbox:tokyo-night-light', 'custom:statusbox:tokyo-night-dark')
+    await pick('custom:pitwall:tokyo-night-light', 'custom:pitwall:tokyo-night-dark')
     await clock.advance(0)
     expect(await shown('#2e7de9')).toEqual(['#2e7de9', '#8c6c3e', '#587539', true])
-    await pick('dark', 'custom:statusbox:tokyo-night-light')
+    await pick('dark', 'custom:pitwall:tokyo-night-light')
     await clock.advance(0)
     expect(await shown('claude')).toEqual(['#5f9cf5', 'yellow', 'green', true])
   })
@@ -1592,8 +1592,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('fs.list', () => ({ value: [] }))
     const writes: [string | undefined, string | undefined][] = []
     on('process.run', ($, e) => {
-      const isWrite = e.init?.env?.STATUSBOX_OSC !== undefined
-      if (isWrite) writes.push([e.init?.env?.STATUSBOX_OSC, e.init?.env?.STATUSBOX_TTY])
+      const isWrite = e.init?.env?.PITWALL_OSC !== undefined
+      if (isWrite) writes.push([e.init?.env?.PITWALL_OSC, e.init?.env?.PITWALL_TTY])
       const device = e.argv[0] === 'powershell' ? 'CONOUT$\r\n' : '/dev/ttys009'
       return { value: { exitCode: isWrite ? 0 : 1, stdout: isWrite ? device : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     })
@@ -1603,10 +1603,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('config.set', ($, e) => (rows.set(e.key, e.value), { value: e.value }))
     on('session.end', ($, e) => ({ sessionId: e.sessionId }))
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
-    const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const band = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     await clock.advance(0)
     const change = async (key: string, value: ConfigValue, previous: ConfigValue) => {
-      const provider = key.startsWith('statusbox.') ? { plugin: 'statusbox', tier: 'user' as const } : engineRow.provider
+      const provider = key.startsWith('pitwall.') ? { plugin: 'pitwall', tier: 'user' as const } : engineRow.provider
       await $.config.set({ key, value, previous, provider, origin: { kind: 'composer' as const } })
       await clock.advance(1000)
     }
@@ -1616,46 +1616,47 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a skin's own theme picked in /theme repaints the box in that skin`, async ($, on) => {
     const { band, change } = await themed($, on, 'dark')
     const sonnet = async () => (await band.findAll({ type: 'Text', in: 'chip-model' })).find(text => text.props.color)?.props.color
-    await change('theme', 'custom:statusbox:nord-light', 'dark')
+    await change('theme', 'custom:pitwall:nord-light', 'dark')
     const nord = await sonnet()
-    await change('theme', 'dark', 'custom:statusbox:nord-light')
+    await change('theme', 'dark', 'custom:pitwall:nord-light')
     expect([nord, await sonnet()]).toEqual(['#5e81ac', '#5f9cf5'])
   })
 
-  test(`${surface}: a skin paints the terminal's background, and leaving puts the terminal's own back`, async ($, on) => {
-    const { clock, writes, change } = await themed($, on, 'custom:statusbox:tokyo-night-dark')
+  test(`${surface}: a skin paints the terminal's background and text, and leaving puts the terminal's own back`, async ($, on) => {
+    const { clock, writes, change } = await themed($, on, 'custom:pitwall:tokyo-night-dark')
     await clock.advance(1000)
-    await change('theme', 'custom:statusbox:tokyo-night-light', 'custom:statusbox:tokyo-night-dark')
-    await change('statusbox.terminalBackground', false, true)
-    await change('statusbox.terminalBackground', true, false)
+    await change('theme', 'custom:pitwall:tokyo-night-light', 'custom:pitwall:tokyo-night-dark')
+    await change('pitwall.terminalBackground', false, true)
+    await change('pitwall.terminalBackground', true, false)
     await $.session.end({ reason: 'clear', sessionId: 'abc', resume: { id: 'abc' } })
     const cleared = writes.length
     await $.session.end({ reason: 'prompt_input_exit', sessionId: 'abc', resume: { id: 'abc' } })
     const tty = '/dev/ttys009'
+    const [night, day] = ['10;#c0caf5|11;#1a1b26', '10;#3760bf|11;#e1e2e7']
     expect([cleared, writes]).toEqual(
-      surface === 'terminal' ? [4, [['11;#1a1b26', ''], ['11;#e1e2e7', tty], ['111', tty], ['11;#e1e2e7', tty], ['111', tty]]] : [0, []],
+      surface === 'terminal' ? [4, [[night, ''], [day, tty], ['110|111', tty], [day, tty], ['110|111', tty]]] : [0, []],
     )
   })
 
   test(`${surface}: a background write waits out the redraw, and only the last colour asked for is written`, async ($, on) => {
-    const { clock, writes } = await themed($, on, 'custom:statusbox:tokyo-night-dark')
+    const { clock, writes } = await themed($, on, 'custom:pitwall:tokyo-night-dark')
     await clock.advance(1000)
     const engineRow = { plugin: 'engine', tier: 'core' as const }
     const pick = (value: string, previous: string) => $.config.set({ key: 'theme', value, previous, provider: engineRow, origin: { kind: 'composer' as const } })
-    await pick('custom:statusbox:nord-dark', 'custom:statusbox:tokyo-night-dark')
+    await pick('custom:pitwall:nord-dark', 'custom:pitwall:tokyo-night-dark')
     await clock.advance(30)
-    await pick('custom:statusbox:dracula-dark', 'custom:statusbox:nord-dark')
+    await pick('custom:pitwall:dracula-dark', 'custom:pitwall:nord-dark')
     await clock.advance(30)
     const waiting = writes.length
     await clock.advance(1000)
-    expect([waiting, writes.map(([osc]) => osc)]).toEqual(surface === 'terminal' ? [1, ['11;#1a1b26', '11;#282a36']] : [0, []])
+    expect([waiting, writes.map(([osc]) => osc)]).toEqual(surface === 'terminal' ? [1, ['10;#c0caf5|11;#1a1b26', '10;#f8f8f2|11;#282a36']] : [0, []])
   })
 
   test(`${surface}: on Windows a skin paints the background through Claude Code's console`, async ($, on) => {
-    const { clock, writes } = await themed($, on, 'custom:statusbox:tokyo-night-dark', 'Windows_NT')
+    const { clock, writes } = await themed($, on, 'custom:pitwall:tokyo-night-dark', 'Windows_NT')
     await clock.advance(1000)
     await $.session.end({ reason: 'prompt_input_exit', sessionId: 'abc', resume: { id: 'abc' } })
-    expect(writes).toEqual(surface === 'terminal' ? [['11;#1a1b26', ''], ['111', 'CONOUT$']] : [])
+    expect(writes).toEqual(surface === 'terminal' ? [['10;#c0caf5|11;#1a1b26', ''], ['110|111', 'CONOUT$']] : [])
   })
 
   test(`${surface}: classic leaves the terminal's background alone`, async ($, on) => {
@@ -1665,7 +1666,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(writes).toEqual([])
   })
 
-  const skinned = async ($: Engine, on: On, theme = 'custom:statusbox:tokyo-night-dark') => {
+  const skinned = async ($: Engine, on: On, theme = 'custom:pitwall:tokyo-night-dark') => {
     engine(on)
     on('config.list', () => ({ value: [{ key: 'theme', value: theme, label: 'Theme', kind: 'choice' as const, isLocked: false, provider: { plugin: 'engine', tier: 'core' as const } }] }))
     const clock = mock.clock(on)
@@ -1689,7 +1690,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   test(`${surface}: a skinned chat draws a tool call's row in its kind's colour, with its edit and its time`, async ($, on) => {
     await skinned($, on)
-    const mount = (props: ReturnType<typeof row>) => $.ui.mount({ plugin: 'statusbox', surface, component: 'ToolUse', requestId: props.tool_use_id, props })
+    const mount = (props: ReturnType<typeof row>) => $.ui.mount({ plugin: 'pitwall', surface, component: 'ToolUse', requestId: props.tool_use_id, props })
     const textIn = async (ui: Awaited<ReturnType<typeof mount>>) => (await ui.findAll({ type: 'Text' })).filter(t => t.props.color).map(t => `${t.text}:${t.props.color}`)
     const edit = await mount(row('Edit', { file_path: '/home/me/repo/src/a.ts', old_string: 'a\nb', new_string: 'a\nb\nc' }))
     await $.tool.call({ tool: 'Bash', command: 'npm test\nmore', tool_use_id: 'toolu_bash' } as never)
@@ -1709,29 +1710,29 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
   test(`${surface}: classic, or the toggle off, leaves the chat to Claude Code`, async ($, on) => {
     await skinned($, on, 'dark')
-    const tool = await $.ui.mount({ plugin: 'statusbox', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
+    const tool = await $.ui.mount({ plugin: 'pitwall', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
     expect(await tool.find({ key: 'tool-row' })).toBeUndefined()
   })
 
   test(`${surface}: a skin with its chat toggle off leaves the chat to Claude Code`, { options: { chatSkin: false } }, async ($, on) => {
     await skinned($, on)
-    const tool = await $.ui.mount({ plugin: 'statusbox', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
-    const prompt = await $.ui.mount({ plugin: 'statusbox', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'hi', origin: { kind: 'composer' }, isExpanded: true } })
+    const tool = await $.ui.mount({ plugin: 'pitwall', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
+    const prompt = await $.ui.mount({ plugin: 'pitwall', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'hi', origin: { kind: 'composer' }, isExpanded: true } })
     expect([await tool.find({ key: 'tool-row' }), await prompt.find({ key: 'prompt-row' })]).toEqual([undefined, undefined])
   })
 
   test(`${surface}: a skinned chat outlines the person's prompt and draws a reply's tables as cards`, async ($, on) => {
     await skinned($, on)
-    const prompt = await $.ui.mount({ plugin: 'statusbox', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'fix the bar', origin: { kind: 'composer' }, isExpanded: true } })
+    const prompt = await $.ui.mount({ plugin: 'pitwall', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'fix the bar', origin: { kind: 'composer' }, isExpanded: true } })
     const notice = await $.ui.mount({
-      plugin: 'statusbox',
+      plugin: 'pitwall',
       surface,
       component: 'UserMessage',
       requestId: 'm2',
       props: { text: 'task done', origin: { kind: 'task-notification' }, isExpanded: true },
     })
     const text = ['Two runs:', '', '| run | ms |', '|-----|---:|', '| **a** | 12 |', '| b | 340 |', '', 'And the raw form:', '```', '| x | y |', '|---|---|', '```'].join('\n')
-    const reply = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AssistantMessage', requestId: 'r1', props: { text, isFirstOfReply: true } })
+    const reply = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AssistantMessage', requestId: 'r1', props: { text, isFirstOfReply: true } })
     if (surface === 'desktop') {
       expect([await prompt.find({ key: 'prompt-row' }), await reply.find({ key: 'reply' })]).toEqual([undefined, undefined])
       return
@@ -1768,7 +1769,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], serverToolUses, stopReason: 'end_turn' as const, usage: null }
     })
     await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const card = async () => (await pane.find({ type: 'Text', text: '✶ Fable 5.1' })) !== undefined
     expect(await card()).toBe(false)
 
@@ -1812,7 +1813,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect([reads.length > 0, reads.every(path => is(path, own))]).toEqual([true, true])
 
     await $.telemetry.log(apiRequest({ query_source: 'agent:builtin:Explore', cost_usd: 1, input_tokens: 2, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0 }))
-    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
     const figure = async (key: string) => `${key} ${(await pane.find({ type: 'Text', in: `n-${key}` }))?.text}`
     const want = {
       'a1-advisor-calls': '2',
@@ -1896,7 +1897,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const textOf = (node: unknown): string => (typeof node === 'string' ? node : ((node as Node).children ?? []).map(textOf).join(''))
     const seen: unknown[] = []
     for (const bodyColumns of [40, 28, 22, 18]) {
-      const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: { ...PANE, bodyColumns, scroll: { offset: 0, bodyRows: 80 } } })
+      const pane = await $.ui.mount({ plugin: 'pitwall', surface, component: 'Pane', requestId: 'sidebar', props: { ...PANE, bodyColumns, scroll: { offset: 0, bodyRows: 80 } } })
       const bar = (await pane.find({ key: 'cache-left-a1' }))?.props.width
       seen.push([bodyColumns, over(await pane.drawn(), bodyColumns), (await pane.find({ type: 'Text', text: ' if resumed' })) !== undefined, bar === undefined || (bar as number) > 0])
       await pane.unmount()
@@ -1913,7 +1914,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const opened: (true | undefined)[] = []
     engine(on, { opened })
     const clock = mock.clock(on)
-    const repo = '/home/me/Desktop/repos/personal/statusbox'
+    const repo = '/home/me/Desktop/repos/personal/pitwall'
     mock.env(on, { HOME: '/home/me' })
     on('session.start', ($, e) => ({ cwd: e.cwd }))
     on('session.model', () => ({ value: 'claude-opus-5-5' }))
@@ -1921,7 +1922,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits: [], cost: { usd: 0 } } }))
     on('session.cwd', () => ({ value: repo }))
     on('session.root', () => ({ value: repo }))
-    on('session.repo', () => ({ value: { root: repo, remote: 'git@github.com:me/statusbox.git', internal: false, name: null } }))
+    on('session.repo', () => ({ value: { root: repo, remote: 'git@github.com:me/pitwall.git', internal: false, name: null } }))
     on('session.id', () => ({ value: 'abc' }))
     on('settings.read', () => ({ value: { effortLevel: 'xhigh' } }))
     on('agent.list', () => ({ value: [] }))
@@ -1954,7 +1955,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     const shown: unknown[] = []
     for (const bodyColumns of [140, 93, 63, 52, 44]) {
-      const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true, bodyColumns } })
+      const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true, bodyColumns } })
       const lines = ((await frameOf(ui)) as { children: unknown[] }).children.filter(Boolean)
       const has = async (key: string) => (await ui.find({ key })) !== undefined
       const full = [(await ui.find({ key: 'bar' }))?.props.width, await has('panel'), await has('n-in-delta')]
@@ -1963,13 +1964,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
     }
     expect(shown).toEqual([140, 93, 63, 52, 44].map(bodyColumns => [bodyColumns, true, true, true, true, ...(bodyColumns === 140 ? [30, true, true] : [])]))
 
-    const bare = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, bodyColumns: 52 } })
+    const bare = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: { ...BAND, bodyColumns: 52 } })
     expect(await bare.find({ key: 'panel' })).toBeUndefined()
     await bare.press({ key: 'chevron-panel' })
     expect(opened).toEqual([true])
     await bare.unmount()
 
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true, bodyColumns: 44 } })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true, bodyColumns: 44 } })
     await ui.press({ key: 'model' })
     await clock.advance(1000)
     await ui.advance(1000)
@@ -1997,9 +1998,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const opened: (true | undefined)[] = []
     engine(on, { opened })
     const main = { columns: 160, rows: 40, isFullscreen: false }
-    await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND, viewport: main })
+    await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND, viewport: main })
     expect(opened).toEqual([])
-    await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND, viewport: { ...main, isFullscreen: true } })
+    await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND, viewport: { ...main, isFullscreen: true } })
     expect(opened).toEqual([undefined])
   })
 
@@ -2010,12 +2011,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     mock.env(on, { HOME: '/home/me' })
     on('session.root', () => ({ value: '/home/me/repo' }))
     on('session.id', () => ({ value: 's1' }))
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
     for (let press = 0; press < 2; press++) {
       await ui.press({ key: 'panel' })
       await clock.advance(1000)
     }
-    await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND, viewport: { columns: 160, rows: 40, isFullscreen: true } })
+    await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND, viewport: { columns: 160, rows: 40, isFullscreen: true } })
     expect(opened).toEqual([true])
   })
 
@@ -2028,7 +2029,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       changed: ['context'],
     })
 
-    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const ui = await $.ui.mount({ plugin: 'pitwall', surface, component: 'AbovePrompt', props: BAND })
 
     expect(await ui.find({ key: 'compact' })).toBeDefined()
   })
@@ -2063,7 +2064,7 @@ test('alerts: a permission request, a finished turn and compaction each raise on
   await $.classic.PreCompact({ trigger: 'auto', custom_instructions: null })
   await settle(3)
 
-  expect(ran.map(env => env.STATUSBOX_SOUND)).toEqual(['Windows Exclamation.wav', 'chimes.wav', 'Windows Battery Low.wav'])
+  expect(ran.map(env => env.PITWALL_SOUND)).toEqual(['Windows Exclamation.wav', 'chimes.wav', 'Windows Battery Low.wav'])
 })
 
 test('alerts: the context alert re-arms below its threshold, the rate alert when its window resets', async ($, on) => {
@@ -2088,7 +2089,7 @@ test('alerts: the context alert re-arms below its threshold, the rate alert when
     heard.push(ran.length)
   }
   expect(heard).toEqual([1, 1, 2, 3, 4])
-  expect(new Set(ran.map(env => env.STATUSBOX_SOUND))).toEqual(new Set(['Windows Battery Critical.wav']))
+  expect(new Set(ran.map(env => env.PITWALL_SOUND))).toEqual(new Set(['Windows Battery Critical.wav']))
 })
 
 test('alerts: each rate window sounds once until its own reset, whichever of them is higher', async ($, on) => {
@@ -2116,7 +2117,7 @@ test('alerts: each rate window sounds once until its own reset, whichever of the
     heard.push(ran.length)
   }
   expect(heard).toEqual([1, 1, 1, 2, 3])
-  expect(new Set(ran.map(env => env.STATUSBOX_SOUND))).toEqual(new Set(['Windows Battery Critical.wav']))
+  expect(new Set(ran.map(env => env.PITWALL_SOUND))).toEqual(new Set(['Windows Battery Critical.wav']))
 })
 
 test('alerts: with sounds off nothing starts', { options: { sounds: false } }, async ($, on) => {

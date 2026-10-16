@@ -2,7 +2,7 @@
 name: sync
 description: >
   Fetch the latest upstream branch and merge it into the current branch, in
-  the statusbox repo — feature branches (`dev-<feature>`) sync from
+  the pitwall repo — feature branches (`dev-<feature>`) sync from
   `dev`, and `dev` itself syncs from `master`. Stages the merge, walks through any conflicts
   interactively, then creates the merge commit directly (signed when the
   user signs commits). Use whenever
@@ -80,7 +80,7 @@ Tell the user how many files conflict.
 
 Per file:
 - Read the file and show the `<<<<<<<`/`=======`/`>>>>>>>` sections
-- Explain what each side changed and why they conflict — for this repo that's usually `hooks/register.tsx` (every hook lives in it), `tests/statusbox.test.ts` (the one test file), `types/index.d.ts` (keep every key both sides declare), or a README/CLAUDE.md section
+- Explain what each side changed and why they conflict — for this repo that's usually `hooks/register.tsx` (every hook lives in it), `tests/pitwall.test.ts` (the one test file), `types/index.d.ts` (keep every key both sides declare), or a README/CLAUDE.md section
 - A conflict in `themes/*.json` is never merged by hand: resolve `hooks/skin.ts`, then make the themes again with the command in CLAUDE.md's Development section and `git add` them
 - Ask via AskUserQuestion:
   - **Keep ours** — `git checkout --ours <file> && git add <file>`

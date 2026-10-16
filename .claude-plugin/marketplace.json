@@ -1,5 +1,5 @@
 {
-  "name": "statusbox",
+  "name": "pitwall",
   "owner": { "name": "axlaser" },
-  "plugins": [{ "name": "statusbox", "source": "./" }]
+  "plugins": [{ "name": "pitwall", "source": "./" }]
 }

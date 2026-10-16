@@ -1,7 +1,7 @@
 ---
 name: pr
 description: >
-  Create a pull request from the current branch for statusbox, into
+  Create a pull request from the current branch for pitwall, into
   the right base for this repo's two-tier flow — feature branches
   (`dev-<feature>`) target `dev`, and `dev` itself targets `master` as a
   release PR. Analyzes the new
@@ -116,7 +116,7 @@ Expect false positives from identifiers (`isStdoutTruncated`, `$.env.get(...)`) 
 
 ## Step 2.5 — Release PRs: version and notes
 
-**Skip this entirely when the base is `dev`.** When the base is `master`, this PR is the release: `master` is what `/plugin install statusbox --marketplace axlaser/statusbox` fetches and what `claude plugin update` moves people to. **Merging it publishes it**, with no review step between the merge and every user's next update, so settle the version and the notes *here*.
+**Skip this entirely when the base is `dev`.** When the base is `master`, this PR is the release: `master` is what `/plugin install pitwall --marketplace axlaser/pitwall` fetches and what `claude plugin update` moves people to. **Merging it publishes it**, with no review step between the merge and every user's next update, so settle the version and the notes *here*.
 
 ### Settle the version
 
@@ -129,13 +129,13 @@ Then AskUserQuestion with concrete candidates — `2.1.0`, `2.0.1`, `3.0.0` — 
 
 ### Write the release notes — do not just check for them
 
-`docs/releases/<version>.md` holds them. **If it does not exist, write it as part of this PR**: what changed for the person using the plugin, anything they must do (a newer Claude Code, a setting), and how to report a problem (`claude --debug`, and the dim `statusbox:` lines in the transcript). No changelog dump. Show the draft in full and get approval before committing it through the `commit` skill.
+`docs/releases/<version>.md` holds them. **If it does not exist, write it as part of this PR**: what changed for the person using the plugin, anything they must do (a newer Claude Code, a setting), and how to report a problem (`claude --debug`, and the dim `pitwall:` lines in the transcript). No changelog dump. Show the draft in full and get approval before committing it through the `commit` skill.
 
 ### Then verify, in this order
 
 1. **`plugin.json`'s version is the one settled above.**
 2. **`docs/releases/<version>.md` exists** and is committed.
-3. **The plugin was installed from the branch and used in a live session** — `claude plugin marketplace add <path to this checkout>`, then `claude plugin install statusbox@statusbox` — on each platform the diff touches. The test kit drives hooks, not a terminal's paint.
+3. **The plugin was installed from the branch and used in a live session** — `claude plugin marketplace add <path to this checkout>`, then `claude plugin install pitwall@pitwall` — on each platform the diff touches. The test kit drives hooks, not a terminal's paint.
 4. **CI is green on all three platforms**, and every manual check is *recorded* — the version tested and what was observed, not "looked fine".
 
 ### Carry the plan in the body
@@ -171,7 +171,7 @@ Release PRs additionally carry the `## Release` section from Step 2.5, placed fi
 **Test plan guidance** — the automated gates are CI's job; this list is for what CI cannot see. Scope it to the actual diff:
 - `- [ ] Box renders without broken alignment, beside the docked panel and without it`
 - `- [ ] Colors display correctly (green/yellow/red thresholds)`
-- `- [ ] No dim "statusbox: ... skipped" line in the transcript`
+- `- [ ] No dim "pitwall: ... skipped" line in the transcript`
 - `- [ ] Repo row handles detached HEAD, no-repo, and fresh-clone states`
 - `- [ ] Each skin's theme in /theme repaints the box, the panel, the chat and the terminal's background; a built-in theme puts classic and the terminal's own background back`
 - `- [ ] Model and effort pickers open, pick and confirm; panel cards fold and the panel slides open and shut`
@@ -250,7 +250,7 @@ A failure on one platform only is worth calling out as such rather than as "CI i
 Only for `dev` → `master`, and only when the user asks to proceed. The merge already published the plugin; a tag only marks it.
 
 1. Confirm `master` now carries the merge and `.claude-plugin/plugin.json` there holds the new version.
-2. Install it from the published marketplace in a fresh session (`/plugin marketplace update statusbox`, then `/plugin install statusbox@statusbox`) and confirm the box draws.
+2. Install it from the published marketplace in a fresh session (`/plugin marketplace update pitwall`, then `/plugin install pitwall@pitwall`) and confirm the box draws.
 3. If the user wants a tag: confirm it does not already exist (`git tag -l "<tag>"`), **ask for approval to push that specific tag**, then `git tag -a <tag> <sha> -m "..."` and `git push origin <tag>`.
 
 ## Edge cases

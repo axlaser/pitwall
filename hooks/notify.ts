@@ -18,7 +18,7 @@ const TIMEOUT_MS = 30_000
 
 const WINDOWS_PS = `
 $ErrorActionPreference = 'SilentlyContinue'
-$wav = Join-Path $env:SystemRoot ('Media\\' + $env:STATUSBOX_SOUND)
+$wav = Join-Path $env:SystemRoot ('Media\\' + $env:PITWALL_SOUND)
 if (Test-Path -LiteralPath $wav) { (New-Object Media.SoundPlayer $wav).PlaySync() } else { [Media.SystemSounds]::Asterisk.Play() }
 `
 
@@ -44,7 +44,7 @@ async function raise($: $, alert: Alert): Promise<void> {
   const os = await detect($)
   const { mac, linux, windows } = SOUNDS[alert]
   const run = (argv: string[], env?: Record<string, string>) => void $.process.run(argv, { timeoutMs: TIMEOUT_MS, ...(env && { env }) }).catch(() => undefined)
-  if (os === 'windows') return run(['powershell', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PS], { STATUSBOX_SOUND: windows })
+  if (os === 'windows') return run(['powershell', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PS], { PITWALL_SOUND: windows })
   if (os === 'mac') return run(['afplay', `/System/Library/Sounds/${mac}`])
-  run(['/bin/sh', '-c', LINUX_SH, 'statusbox', `/usr/share/sounds/freedesktop/stereo/${linux}`])
+  run(['/bin/sh', '-c', LINUX_SH, 'pitwall', `/usr/share/sounds/freedesktop/stereo/${linux}`])
 }

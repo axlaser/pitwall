@@ -16,39 +16,39 @@ import type { Palette } from './skin'
 type $ = EngineInterface
 
 const ZERO: Tokens = { in: 0, cacheWrite: 0, cacheRead: 0, out: 0 }
-const reading = atom({ plugin: 'statusbox', key: 'reading' } as const, null)
-const meta = atom({ plugin: 'statusbox', key: 'meta' } as const, null)
-const place = atom({ plugin: 'statusbox', key: 'place' } as const, null)
-const totals = atom({ plugin: 'statusbox', key: 'totals' } as const, ZERO)
-const last = atom({ plugin: 'statusbox', key: 'last' } as const, ZERO)
-const advisor = atom({ plugin: 'statusbox', key: 'advisor' } as const, null)
-const agentAdvisor = atom({ plugin: 'statusbox', key: 'agentAdvisor' } as const, {} as Record<string, Advisor>)
-const override = atom({ plugin: 'statusbox', key: 'override' } as const, null)
-const turns = atom({ plugin: 'statusbox', key: 'turns' } as const, 0)
-const agents = atom({ plugin: 'statusbox', key: 'agents' } as const, [])
-const stopArmed = atom({ plugin: 'statusbox', key: 'stopArmed' } as const, null)
+const reading = atom({ plugin: 'pitwall', key: 'reading' } as const, null)
+const meta = atom({ plugin: 'pitwall', key: 'meta' } as const, null)
+const place = atom({ plugin: 'pitwall', key: 'place' } as const, null)
+const totals = atom({ plugin: 'pitwall', key: 'totals' } as const, ZERO)
+const last = atom({ plugin: 'pitwall', key: 'last' } as const, ZERO)
+const advisor = atom({ plugin: 'pitwall', key: 'advisor' } as const, null)
+const agentAdvisor = atom({ plugin: 'pitwall', key: 'agentAdvisor' } as const, {} as Record<string, Advisor>)
+const override = atom({ plugin: 'pitwall', key: 'override' } as const, null)
+const turns = atom({ plugin: 'pitwall', key: 'turns' } as const, 0)
+const agents = atom({ plugin: 'pitwall', key: 'agents' } as const, [])
+const stopArmed = atom({ plugin: 'pitwall', key: 'stopArmed' } as const, null)
 const NO_SPEND: Spend = { main: 0, agents: 0, background: 0 }
-const spend = atom({ plugin: 'statusbox', key: 'spend' } as const, NO_SPEND)
+const spend = atom({ plugin: 'pitwall', key: 'spend' } as const, NO_SPEND)
 const NO_SPEED: Speed = { firstOutputMs: null, replyMs: null, startedAt: null }
-const speed = atom({ plugin: 'statusbox', key: 'speed' } as const, NO_SPEED)
-const cache = atom({ plugin: 'statusbox', key: 'cache' } as const, null)
-const transcriptBytes = atom({ plugin: 'statusbox', key: 'transcriptBytes' } as const, null)
-const menu = atom({ plugin: 'statusbox', key: 'menu' } as const, null)
-const motion = atom({ plugin: 'statusbox', key: 'motion' } as const, {} as Record<string, Motion>)
-const folded = atom({ plugin: 'statusbox', key: 'folded' } as const, [] as string[])
-const previews = atom({ plugin: 'statusbox', key: 'previews' } as const, [] as Preview[])
-const now = atom({ plugin: 'statusbox', key: 'now' } as const, 0)
-const panelClosed = atom({ plugin: 'statusbox', key: 'panelClosed' } as const, false)
-const skin = atom({ plugin: 'statusbox', key: 'skin' } as const, 'classic' as string)
-const isLight = atom({ plugin: 'statusbox', key: 'isLight' } as const, false)
-const chatSkinned = atom({ plugin: 'statusbox', key: 'chatSkinned' } as const, true)
-const grounded = atom({ plugin: 'statusbox', key: 'grounded' } as const, true)
-const took = atom({ plugin: 'statusbox', key: 'took' } as const, {} as Record<string, number>)
+const speed = atom({ plugin: 'pitwall', key: 'speed' } as const, NO_SPEED)
+const cache = atom({ plugin: 'pitwall', key: 'cache' } as const, null)
+const transcriptBytes = atom({ plugin: 'pitwall', key: 'transcriptBytes' } as const, null)
+const menu = atom({ plugin: 'pitwall', key: 'menu' } as const, null)
+const motion = atom({ plugin: 'pitwall', key: 'motion' } as const, {} as Record<string, Motion>)
+const folded = atom({ plugin: 'pitwall', key: 'folded' } as const, [] as string[])
+const previews = atom({ plugin: 'pitwall', key: 'previews' } as const, [] as Preview[])
+const now = atom({ plugin: 'pitwall', key: 'now' } as const, 0)
+const panelClosed = atom({ plugin: 'pitwall', key: 'panelClosed' } as const, false)
+const skin = atom({ plugin: 'pitwall', key: 'skin' } as const, 'classic' as string)
+const isLight = atom({ plugin: 'pitwall', key: 'isLight' } as const, false)
+const chatSkinned = atom({ plugin: 'pitwall', key: 'chatSkinned' } as const, true)
+const grounded = atom({ plugin: 'pitwall', key: 'grounded' } as const, true)
+const took = atom({ plugin: 'pitwall', key: 'took' } as const, {} as Record<string, number>)
 const TOOK_KEPT = 200
 const NOT_ALERTED: Alerted = { context: false, rate: {} }
-const alerted = atom({ plugin: 'statusbox', key: 'alerted' } as const, NOT_ALERTED)
+const alerted = atom({ plugin: 'pitwall', key: 'alerted' } as const, NOT_ALERTED)
 const NO_VERDICTS: Verdicts = { allowed: 0, blocked: 0 }
-const verdicts = atom({ plugin: 'statusbox', key: 'verdicts' } as const, NO_VERDICTS)
+const verdicts = atom({ plugin: 'pitwall', key: 'verdicts' } as const, NO_VERDICTS)
 
 const CHANGELOG = 'https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md'
 const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -147,12 +147,12 @@ export const register: Register = (on, options) => {
     }
     return r
   })
-  on('config.set', { key: 'statusbox.chatSkin' }, async ($, e, next) => {
+  on('config.set', { key: 'pitwall.chatSkin' }, async ($, e, next) => {
     const r = await next(e)
     if ('value' in r) await update($, chatSkinned, () => r.value !== false)
     return r
   })
-  on('config.set', { key: 'statusbox.terminalBackground' }, async ($, e, next) => {
+  on('config.set', { key: 'pitwall.terminalBackground' }, async ($, e, next) => {
     const r = await next(e)
     if ('value' in r) await update($, grounded, () => r.value !== false)
     return r
@@ -432,7 +432,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || (e.surface !== 'terminal' && e.surface !== 'desktop')) return next(e)
     const { P } = await paint($)
-    if (e.surface === 'terminal') ground($, (await read($, grounded)) ? (P.bg ?? null) : null)
+    if (e.surface === 'terminal') ground($, (await read($, grounded)) && P.bg ? { bg: P.bg, text: P.text } : null)
     if (!isPanelOffered && e.viewport?.isFullscreen === true) {
       isPanelOffered = true
       if (!(await read($, panelClosed))) {
@@ -1564,7 +1564,7 @@ async function stopAgent($: $, agent: Agent): Promise<void> {
   halting.add(agent.id)
   await move($, `halt-${agent.id}`, 1)
   const r = await $.tool
-    .call({ tool: 'TaskStop', task_id: agent.id, consent: `The user pressed "■ Stop" then "■ Confirm" in the statusbox panel to stop agent ${agent.id}` })
+    .call({ tool: 'TaskStop', task_id: agent.id, consent: `The user pressed "■ Stop" then "■ Confirm" in the pitwall panel to stop agent ${agent.id}` })
     .catch(() => null)
   const refusal = r === null ? 'Claude Code cannot stop agents here' : (r.deny ?? (r.isError ? (r.text ?? `The ${agent.type} agent did not stop`) : undefined))
   if (refusal !== undefined) {
@@ -1978,8 +1978,8 @@ async function seedSkin($: $, options: Record<string, unknown>): Promise<void> {
   const theme = row('theme')
   await update($, skin, () => skinOfTheme(theme)?.skin ?? 'classic')
   await update($, isLight, () => isKnownLightTheme(theme))
-  await update($, chatSkinned, () => (row('statusbox.chatSkin') ?? options.chatSkin) !== false)
-  await update($, grounded, () => (row('statusbox.terminalBackground') ?? options.terminalBackground) !== false)
+  await update($, chatSkinned, () => (row('pitwall.chatSkin') ?? options.chatSkin) !== false)
+  await update($, grounded, () => (row('pitwall.terminalBackground') ?? options.terminalBackground) !== false)
 }
 
 async function paint($: $): Promise<{ name: string; P: Palette }> {
@@ -2168,8 +2168,8 @@ async function* transcriptLines($: $, path: string): AsyncGenerator<string> {
 const SAVE_PS =
   'Add-Type -AssemblyName System.Windows.Forms, System.Drawing;' +
   '$img = [System.Windows.Forms.Clipboard]::GetImage(); if ($null -eq $img) { exit 1 };' +
-  "Get-ChildItem -LiteralPath (Split-Path $env:STATUSBOX_SAVE) -Filter 'statusbox-*.png' | Where-Object LastWriteTime -lt (Get-Date).AddDays(-1) | Remove-Item -ErrorAction SilentlyContinue;" +
-  '$img.Save($env:STATUSBOX_SAVE, [System.Drawing.Imaging.ImageFormat]::Png)'
+  "Get-ChildItem -LiteralPath (Split-Path $env:PITWALL_SAVE) -Filter 'pitwall-*.png' | Where-Object LastWriteTime -lt (Get-Date).AddDays(-1) | Remove-Item -ErrorAction SilentlyContinue;" +
+  '$img.Save($env:PITWALL_SAVE, [System.Drawing.Imaging.ImageFormat]::Png)'
 
 const captured = new Map<number, Promise<Preview | null>>()
 let draftImageIds = new Set<number>()
@@ -2188,9 +2188,9 @@ async function syncPreviews($: $, text: string, isPaste: boolean): Promise<void>
 async function captureClipboard($: $, id: number): Promise<Preview | null> {
   const [os, temp, session] = await Promise.all([$.env.get('OS'), $.env.get('TEMP'), $.session.id()])
   if (os !== 'Windows_NT' || !temp) return null
-  const path = `${temp.replace(/[\\/]+$/, '')}\\statusbox-${session.replace(/[^\w-]/g, '_')}-${id}.png`
+  const path = `${temp.replace(/[\\/]+$/, '')}\\pitwall-${session.replace(/[^\w-]/g, '_')}-${id}.png`
   const r = await $.process.run(['powershell', '-NoProfile', '-NonInteractive', '-Sta', '-Command', SAVE_PS], {
-    env: { STATUSBOX_SAVE: path },
+    env: { PITWALL_SAVE: path },
     timeoutMs: 10_000,
   })
   return r.exitCode === 0 ? { id, path } : null

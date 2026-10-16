@@ -11,7 +11,7 @@ import type { EngineInterface } from 'claude-code'
 type $ = EngineInterface
 
 const SH = `
-tty=$STATUSBOX_TTY
+tty=$PITWALL_TTY
 p=$PPID
 n=0
 while [ -z "$tty" ] && [ "$n" -lt 8 ] && [ "$p" -gt 1 ] 2>/dev/null; do
@@ -22,11 +22,13 @@ while [ -z "$tty" ] && [ "$n" -lt 8 ] && [ "$p" -gt 1 ] 2>/dev/null; do
   esac
 done
 [ -n "$tty" ] && [ -w "$tty" ] || exit 1
-printf '\\033]%s\\007' "$STATUSBOX_OSC" > "$tty" && printf '%s' "$tty"
+set -f
+IFS='|'
+for osc in $PITWALL_OSC; do printf '\\033]%s\\007' "$osc"; done > "$tty" && printf '%s' "$tty"
 `
 const PS = `
 trap { exit 1 }
-Add-Type -Name Console -Namespace Statusbox -MemberDefinition @'
+Add-Type -Name Console -Namespace Pitwall -MemberDefinition @'
 [DllImport("kernel32.dll")] static extern bool FreeConsole();
 [DllImport("kernel32.dll")] static extern bool AttachConsole(int pid);
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
@@ -43,11 +45,15 @@ public static bool Paint(string osc) {
   return GetConsoleMode(h, out mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0 && WriteConsoleW(h, osc, osc.Length, out n, IntPtr.Zero);
 }
 '@
-if (-not [Statusbox.Console]::Paint([char]27 + ']' + $env:STATUSBOX_OSC + [char]7)) { exit 1 }
+$osc = -join ($env:PITWALL_OSC.Split('|') | ForEach-Object { [char]27 + ']' + $_ + [char]7 })
+if (-not [Pitwall.Console]::Paint($osc)) { exit 1 }
 'CONOUT$'
 `
-const SET_BACKGROUND = '11'
-const RESET_BACKGROUND = '111'
+// The text colour goes with the background: a reply drawn in the terminal's own
+// foreground stays legible when a light skin paints over a dark profile.
+export type Ground = { bg: string; text: string }
+const paint = (g: Ground) => `10;${g.text}|11;${g.bg}`
+const RESET = '110|111'
 const TIMEOUT_MS = 2000
 // A theme switched redraws the whole screen at once, and a write from another
 // process that lands inside that frame splits one of Claude Code's own
@@ -55,7 +61,7 @@ const TIMEOUT_MS = 2000
 // no plugin can ask for. Past the frame, the write lands between two.
 const SETTLE_MS = 100
 
-const kept = atom({ plugin: 'statusbox', key: 'ground' } as const, null)
+const kept = atom({ plugin: 'pitwall', key: 'ground' } as const, null)
 
 let tty: string | undefined
 let isTtyMissing = false
@@ -63,11 +69,12 @@ let painted: string | null | undefined
 let asked: string | null | undefined
 let queue: Promise<void> = Promise.resolve()
 
-export function ground($: $, color: string | null): void {
-  if (color === asked || isTtyMissing) return
-  asked = color
+export function ground($: $, g: Ground | null): void {
+  const osc = g && paint(g)
+  if (osc === asked || isTtyMissing) return
+  asked = osc
   $.clock.after(SETTLE_MS, () => {
-    if (color === asked) queue = queue.then(() => paintTo($, color))
+    if (osc === asked) queue = queue.then(() => paintTo($, osc))
   })
 }
 
@@ -84,19 +91,18 @@ export async function keepGround($: $): Promise<void> {
   if (painted !== undefined) await update($, kept, () => painted ?? null)
 }
 
-async function paintTo($: $, color: string | null): Promise<void> {
+async function paintTo($: $, osc: string | null): Promise<void> {
   try {
     if (painted === undefined) painted = await read($, kept)
-    if (isTtyMissing || color === painted) return
-    const osc = color === null ? RESET_BACKGROUND : `${SET_BACKGROUND};${color}`
+    if (isTtyMissing || osc === painted) return
     const argv = (await $.env.get('OS')) === 'Windows_NT' ? ['powershell', '-NoProfile', '-NonInteractive', '-Command', PS] : ['/bin/sh', '-c', SH]
-    const r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS, env: { STATUSBOX_OSC: osc, STATUSBOX_TTY: tty ?? '' } })
+    const r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS, env: { PITWALL_OSC: osc ?? RESET, PITWALL_TTY: tty ?? '' } })
     const out = r.stdout.trim()
     isTtyMissing = r.exitCode !== 0 || !(out.startsWith('/dev/') || out === 'CONOUT$')
     if (isTtyMissing) return
     tty = out
-    painted = color
-    await update($, kept, () => color)
+    painted = osc
+    await update($, kept, () => osc)
   } catch {
     isTtyMissing = true
   }

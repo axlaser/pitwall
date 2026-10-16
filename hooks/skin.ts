@@ -207,9 +207,9 @@ export function paletteOf(skin: string, isLight: boolean): Palette {
 }
 
 // Claude Code names themes/<skin>-<dark|light>.json
-// `custom:statusbox:<skin>-<dark|light>`.
+// `custom:pitwall:<skin>-<dark|light>`.
 export function skinOfTheme(theme: unknown): { skin: string; isLight: boolean } | null {
-  const m = typeof theme === 'string' ? /^custom:statusbox:(.+)-(dark|light)$/.exec(theme) : null
+  const m = typeof theme === 'string' ? /^custom:pitwall:(.+)-(dark|light)$/.exec(theme) : null
   return m?.[1] && m[1] !== 'classic' && SKINS[m[1]] ? { skin: m[1], isLight: m[2] === 'light' } : null
 }
 
