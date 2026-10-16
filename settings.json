@@ -1,0 +1,6 @@
+{
+  "subagentStatusLine": {
+    "type": "command",
+    "command": "grep -o '\"id\":\"[^\"]*\"' | sed 's/.*/{&,\"content\":\"\"}/'"
+  }
+}

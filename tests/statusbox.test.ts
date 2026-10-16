@@ -1,9 +1,9 @@
-import type { AgentStatus, ConfigValue, On, PromptEditInput } from 'claude-code'
+import type { AgentInfo, AgentStatus, ConfigValue, On, PromptChangeInput, PromptEditInput } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { shortPath } from '../hooks/history'
 import { cellsOf } from '../hooks/register'
-import { SKINS, themeOf } from '../hooks/skin'
+import { SKINS, paletteOf, themeOf } from '../hooks/skin'
 
 const engine = (on: On, { opened, turns = () => 3, onClose }: { opened?: (true | undefined)[]; turns?: () => number; onClose?: () => Promise<void> } = {}) => {
   const kept = new Map<string, unknown>()
@@ -26,7 +26,7 @@ const engine = (on: On, { opened, turns = () => 3, onClose }: { opened?: (true |
 
 const NO_GIT = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
 
-const mockSession = (on: On, o: { model?: () => string; settings?: () => Record<string, unknown>; id?: () => string; os?: string } = {}) => {
+const mockSession = (on: On, o: { model?: () => string; settings?: () => Record<string, unknown>; id?: () => string; os?: string; agents?: () => AgentInfo[] } = {}) => {
   mock.env(on, o.os ? { HOME: '/home/me', OS: o.os } : { HOME: '/home/me' })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.model', () => ({ value: o.model?.() ?? 'claude-sonnet-6' }))
@@ -37,7 +37,7 @@ const mockSession = (on: On, o: { model?: () => string; settings?: () => Record<
   on('session.root', () => ({ value: '/home/me/repo' }))
   on('session.id', () => ({ value: o.id?.() ?? 'abc' }))
   on('settings.read', () => ({ value: o.settings?.() ?? {} }))
-  on('agent.list', () => ({ value: [] }))
+  on('agent.list', () => ({ value: o.agents?.() ?? [] }))
 }
 
 const responseRow = (kind: string, agentId?: string) => ({
@@ -348,7 +348,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     for (const text of ['○ cold', 'lasts 5m idle', ' to rewrite ']) expect((await cold.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     expect(await cache(cold)).toEqual({ next: '$0.5000', tokens: '100.0K', other: '$0.0200' })
     await cold.unmount()
-    await $.telemetry.log(apiRequest({ query_source: 'repl_main_thread', cost_usd: 0.25, model: 'claude-opus-5-5', cache_creation_1h_tokens: 1000 }))
+    await $.telemetry.log(apiRequest({ query_source: 'repl_main_thread', cost_usd: 0.25, model: 'claude-opus-5-5', cache_creation_1h_tokens: 1000, duration_ms: 90_000 }))
     const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
     const figure = async (key: string) => (await ui.find({ type: 'Text', in: `n-${key}` }))?.text
 
@@ -396,7 +396,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await pane.find({ type: 'Text', text: '┃', in: 'usage-five_hour' })).toBeDefined()
     expect(await ui.find({ key: 'n-usage-five_hour' })).toBeUndefined()
 
-    for (const text of ['● warm', '1h00m left']) expect((await pane.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
+    for (const text of ['● warm', '58m30s left']) expect((await pane.find({ type: 'Text', text })) ? text : `missing: ${text}`).toBe(text)
     expect(await cache(pane)).toEqual({ next: '$0.0200', tokens: '100.0K', other: '$0.8000' })
     const switched = { from_model: 'claude-opus-5-5[1m]', to_model: 'claude-fable-5-1', requested_model: 'fable', source: 'command' as const }
     await $.classic.PostModelSwitch({ ...switched, context_tokens: 100_000, prompt_cache_warm: true, cache_ttl: '1h', estimated_cache_write_usd: 2, pricing: 'catalog' })
@@ -794,6 +794,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     for (const [key, text] of Object.entries(want)) {
       expect(`${key} ${(await ui.find({ type: 'Text', in: `n-a1-${key}` }))?.text}`).toBe(`${key} ${text}`)
     }
+    const P = paletteOf('classic', false)
+    const colours = await Promise.all(['cacheWrite', 'cacheRead'].map(async key => (await ui.find({ type: 'Text', in: `n-a1-${key}` }))?.props.color))
+    expect([colours, P.warn === P.info]).toEqual([[P.warn, P.info], false])
     const band = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
     expect(await band.find({ type: 'Text', text: 'Org pricing' })).toBeUndefined()
   })
@@ -820,13 +823,399 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(costs).toEqual(['$0.2500', '$0.2500'])
   })
 
+  test(`${surface}: an agent's name puts its transcript in the main view, and the panel leads back to the main one`, async ($, on) => {
+    engine(on)
+    mock.clock(on)
+    on('agent.list', () => ({
+      value: [
+        { id: 'a1', description: 'Org pricing', type: 'Explore', status: 'running' as AgentStatus },
+        { id: 'a2', description: 'Old search', type: 'general-purpose', status: 'completed' as AgentStatus },
+      ],
+    }))
+    const asked: (string | undefined)[] = []
+    on('ui.view', ($, e) => (asked.push(e.agentId), { value: e.agentId === 'a2' ? { deny: 'that agent is not one the tasks list shows' } : {} }))
+    const toasts: string[] = []
+    on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+
+    const main = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    expect([(await main.find({ key: 'view-a1' }))?.text, await main.find({ key: 'view-main' })]).toEqual(['Explore ›', undefined])
+    type Node = { type?: string; props?: { color?: string }; hover?: unknown; children?: unknown[] }
+    const textOf = (node: Node | undefined, text: string): Node | undefined =>
+      node?.type === 'Text' && node.children?.join('') === text ? node : (node?.children ?? []).map(child => textOf(child as Node, text)).find(Boolean)
+    const drawn = (await main.drawn()) as Node
+    const [name, chevron] = [textOf(drawn, 'Explore'), textOf(drawn, ' ›')]
+    expect([chevron?.hover, name?.props?.color]).toEqual([{ scope: 'view-a1', color: name?.props?.color }, expect.any(String)])
+    const doubles = (node: unknown): number => {
+      const el = node as { props?: { borderStyle?: string }; children?: unknown[] } | undefined
+      return (el?.props?.borderStyle === 'double' ? 1 : 0) + (el?.children ?? []).reduce((n: number, child) => n + doubles(child), 0)
+    }
+    expect([await main.find({ type: 'Text', text: '● viewing' }), doubles(drawn)]).toEqual([undefined, 0])
+    await main.press({ key: 'view-a1' })
+    await main.unmount()
+
+    const inAgent = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: { ...PANE, view: { agentId: 'a1' } } })
+    expect((await inAgent.find({ key: 'view-a1' }))?.text).toBe('Explore ‹')
+    expect([await inAgent.find({ type: 'Text', text: 'viewing Explore' }), await inAgent.find({ type: 'Text', text: '● viewing' })].map(Boolean)).toEqual([true, true])
+    const viewed = (await inAgent.drawn()) as Node
+    const [viewedName, back] = [textOf(viewed, 'Explore'), textOf(viewed, ' ‹')]
+    expect([back?.hover, doubles(viewed)]).toEqual([{ scope: 'view-a1', color: viewedName?.props?.color }, 1])
+    await inAgent.press({ key: 'view-main' })
+    await inAgent.press({ key: 'view-a1' })
+    await inAgent.press({ key: 'view-a2' })
+    await inAgent.unmount()
+    expect([asked, toasts]).toEqual([['a1', undefined, undefined, 'a2'], ['that agent is not one the tasks list shows']])
+
+    const after = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    expect([await after.find({ key: 'view-a2' }), await after.find({ type: 'Text', text: 'general-purpose' })].map(Boolean)).toEqual([false, true])
+  })
+
+  test(`${surface}: a finished agent stays a minute after it ends, even once Claude Code drops it, then leaves the panel`, async ($, on) => {
+    engine(on)
+    const clock = mock.clock(on)
+    let list: { id: string; description: string; type: string; status: AgentStatus }[] = [{ id: 'a1', description: 'Org pricing', type: 'Explore', status: 'running' }]
+    let lists = 0
+    on('agent.list', () => (lists++, { value: list }))
+    let writes = 0
+    on('state.set', { plugin: 'statusbox', key: 'agents' }, ($, e, next) => (writes++, next(e)))
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    list = [{ ...list[0]!, status: 'completed' }]
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
+    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    expect(await ui.find({ type: 'Text', text: '✓ done' })).toBeDefined()
+
+    list = []
+    const before = writes
+    await clock.advance(55_000)
+    expect([await ui.find({ type: 'Text', text: '✓ done' }), writes - before]).toEqual([expect.anything(), 0])
+    await clock.advance(6000)
+    expect([await ui.find({ type: 'Text', text: '✓ done' }), await ui.find({ type: 'Text', text: 'No agents in this session yet.' })].map(Boolean)).toEqual([false, true])
+    const polled = lists
+    await clock.advance(20_000)
+    expect(lists).toBe(polled)
+  })
+
+  const stoppable = (on: On) => {
+    engine(on)
+    const clock = mock.clock(on)
+    const agent = { id: 'a1', description: 'Org pricing', type: 'Explore', status: 'running' as AgentStatus }
+    let lists = 0
+    on('agent.list', () => (lists++, { value: [agent] }))
+    return { clock, agent, lists: () => lists }
+  }
+  const mountPane = (surface: 'terminal' | 'desktop', $: Engine) => $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+
+  test(`${surface}: two agents starting at once both stay running, whichever list read lands last`, async ($, on) => {
+    engine(on)
+    mock.clock(on)
+    const x = { id: 'x', description: 'first', type: 'Explore', status: 'running' as AgentStatus }
+    const y = { id: 'y', description: 'second', type: 'Explore', status: 'running' as AgentStatus }
+    let reads = 0
+    let release = () => {}
+    const held = new Promise<void>(resolve => (release = resolve))
+    on('agent.list', async () => {
+      const n = reads++
+      if (n === 0) await held
+      return { value: n === 0 ? [x] : [x, y] }
+    })
+    const started = [$.turn.start({ text: 'go', turnId: 'tx', agentId: 'x' }), $.turn.start({ text: 'go', turnId: 'ty', agentId: 'y' })]
+    release()
+    await Promise.all(started)
+    const ui = await mountPane(surface, $)
+    expect(await Promise.all(['stop-x', 'stop-y', 'dismiss-y'].map(async key => Boolean(await ui.find({ key }))))).toEqual([true, true, false])
+  })
+
+  test(`${surface}: a long agent type is cut short so its card keeps one title row`, async ($, on) => {
+    engine(on)
+    mock.clock(on)
+    on('agent.list', () => ({ value: [{ id: 'a1', description: 'Review', type: 'compound-engineering:ce-code-review', status: 'running' as AgentStatus }] }))
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    const name = (await (await mountPane(surface, $)).find({ key: 'view-a1' }))?.text ?? ''
+    expect([name.endsWith('… ›'), cellsOf(name) <= METER - 9 - 10 + 2]).toEqual([true, true])
+  })
+
+  test(`${surface}: a running agent's stop asks once more, then stops it through TaskStop`, async ($, on) => {
+    const { agent } = stoppable(on)
+    const calls: { tool: string; task_id?: string; consent?: string }[] = []
+    on('tool.call', ($, e) => {
+      calls.push(e as never)
+      agent.status = 'killed'
+      return { result: { message: 'Successfully stopped task: a1', task_id: 'a1', task_type: 'local_agent' } as never }
+    })
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    const ui = await mountPane(surface, $)
+    expect([(await ui.find({ key: 'stop-a1' }))?.text, await ui.find({ key: 'dismiss-a1' })]).toEqual(['■ Stop', undefined])
+    type Node = { type?: string; props?: { color?: string; bold?: boolean }; hover?: unknown; children?: unknown[] }
+    const textOf = (node: Node | undefined, text: string): Node | undefined =>
+      node?.type === 'Text' && node.children?.join('') === text ? node : (node?.children ?? []).map(child => textOf(child as Node, text)).find(Boolean)
+    const stop = textOf((await ui.drawn()) as Node, '■ Stop')
+    expect([stop?.props?.color, stop?.props?.bold ?? false, stop?.hover]).toEqual([paletteOf('classic', false).bad, false, { scope: 'stop-a1', bold: true }])
+
+    await ui.press({ key: 'stop-a1' })
+    const armed = await ui.find({ key: 'stop-a1' })
+    expect([armed?.text, calls.length]).toEqual(['■ Confirm', 0])
+    await ui.press({ key: 'stop-a1' })
+    expect(calls.map(call => [call.tool, call.task_id])).toEqual([['TaskStop', 'a1']])
+    expect(calls[0]?.consent).toEqual(expect.stringContaining('"■ Confirm" in the statusbox panel to stop agent a1'))
+    expect([await ui.find({ key: 'stop-a1' }), (await ui.find({ key: 'dismiss-a1' }))?.text, await ui.find({ type: 'Text', text: '✗ killed' })].map(Boolean)).toEqual([
+      false,
+      true,
+      true,
+    ])
+  })
+
+  test(`${surface}: an armed stop goes back to rest after four seconds without stopping anything`, async ($, on) => {
+    const { clock } = stoppable(on)
+    let stops = 0
+    on('tool.call', () => (stops++, { result: {} as never }))
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    const ui = await mountPane(surface, $)
+    await ui.press({ key: 'stop-a1' })
+    await clock.advance(3900)
+    expect((await ui.find({ key: 'stop-a1' }))?.text).toBe('■ Confirm')
+    await clock.advance(100)
+    expect([(await ui.find({ key: 'stop-a1' }))?.text, stops]).toEqual(['■ Stop', 0])
+  })
+
+  test(`${surface}: a stop Claude Code refuses or cannot make says why`, async ($, on) => {
+    stoppable(on)
+    const toasts: string[] = []
+    on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
+    let answers = 0
+    on('tool.call', () => (answers++ === 0 ? { deny: 'The user declined to stop the agent' } : { isError: true as const, result: undefined, text: 'No task found with ID: a1' }))
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    const ui = await mountPane(surface, $)
+    for (let i = 0; i < 4; i++) await ui.press({ key: 'stop-a1' })
+    expect([toasts, (await ui.find({ key: 'stop-a1' }))?.text]).toEqual([['The user declined to stop the agent', 'No task found with ID: a1'], '■ Stop'])
+  })
+
+  test(`${surface}: a stop where no tool can stop agents says Claude Code cannot`, async ($, on) => {
+    stoppable(on)
+    const toasts: string[] = []
+    on('ui.toast', ($, e) => (toasts.push(e.text), { value: undefined }))
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    const ui = await mountPane(surface, $)
+    await ui.press({ key: 'stop-a1' })
+    await ui.press({ key: 'stop-a1' })
+    expect(toasts).toEqual(['Claude Code cannot stop agents here'])
+  })
+
+  test(`${surface}: dismissing a finished agent slides its card out, rolls its rows shut, and a later poll leaves it out`, async ($, on) => {
+    const { clock, agent, lists } = stoppable(on)
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    agent.status = 'completed'
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
+    const ui = await mountPane(surface, $)
+    expect([(await ui.find({ key: 'dismiss-a1' }))?.text, await ui.find({ key: 'stop-a1' })]).toEqual(['✕ dismiss', undefined])
+    const slot = async () => {
+      const box = await ui.find({ key: 'slot-a1' })
+      const inner = box?.children[0] as { props?: { marginLeft?: number } } | undefined
+      return box && ([inner?.props?.marginLeft ?? 0, box.props.height as number | undefined] as const)
+    }
+    expect(await slot()).toEqual([0, undefined])
+
+    await ui.press({ key: 'dismiss-a1' })
+    const seen = [await slot()]
+    for (let beat = 0; beat < 20; beat++) seen.push(await clock.advance(BEAT).then(slot))
+    const drawn = seen.filter(x => x !== undefined)
+    const [margins, heights] = [drawn.map(([margin]) => margin), drawn.map(([, height]) => height ?? 0)]
+    const out = PANE.bodyColumns - 2
+    expect([
+      margins.some(margin => margin > 0 && margin < out),
+      margins.every((margin, i) => i === 0 || margin >= margins[i - 1]!),
+      heights.slice(0, margins.indexOf(out)).every(height => height === heights[0]),
+      heights.every((height, i) => i === 0 || height <= heights[i - 1]!),
+      heights.some(height => height > 0 && height < heights[0]!),
+      seen.at(-1),
+    ]).toEqual([true, true, true, true, true, undefined])
+    expect([await ui.find({ key: 'view-a1' }), await ui.find({ type: 'Text', text: 'No agents in this session yet.' })].map(Boolean)).toEqual([false, true])
+    const polled = lists()
+    await clock.advance(5000)
+    expect([lists() > polled, await ui.find({ key: 'view-a1' }), await ui.find({ type: 'Text', text: 'No agents in this session yet.' })].map(Boolean)).toEqual([true, false, true])
+  })
+
+  test(`${surface}: a finished agent resumed after it left the panel comes back, sliding in, working again`, async ($, on) => {
+    const { clock, agent } = stoppable(on)
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    agent.status = 'completed'
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
+    const ui = await mountPane(surface, $)
+    await ui.press({ key: 'dismiss-a1' })
+    await clock.advance(BEAT * 20)
+    expect(await ui.find({ key: 'view-a1' })).toBeUndefined()
+    await clock.advance(5000)
+    expect(await ui.find({ key: 'view-a1' })).toBeUndefined()
+
+    agent.status = 'running'
+    await $.turn.start({ text: 'one more', turnId: 't2', agentId: 'a1' })
+    const height = async () => (await ui.find({ key: 'slot-a1' }))?.props.height
+    const opening = [await height()]
+    for (let beat = 0; beat < 20; beat++) opening.push(await clock.advance(BEAT).then(height))
+    const rolled = opening.filter((rows): rows is number => typeof rows === 'number')
+    expect([rolled[0], rolled.every((rows, i) => i === 0 || rows >= rolled[i - 1]!), opening.at(-1)]).toEqual([0, true, undefined])
+    expect([(await ui.find({ key: 'stop-a1' }))?.text, await ui.find({ key: 'dismiss-a1' })]).toEqual(['■ Stop', undefined])
+  })
+
+  test(`${surface}: an agent's cache countdown runs from when its request was sent, not from when its answer ended`, async ($, on) => {
+    engine(on)
+    const clock = mock.clock(on)
+    mockSession(on, { agents: () => [{ id: 'a1', description: 'a1', type: 'Explore', status: 'running' as AgentStatus }] })
+    on('process.run', () => NO_GIT)
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }))
+    on('turn.step', async function* ($, e) {
+      await clock.sleep(30_000)
+      const usage = { model: 'claude-opus-5-5', input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 }
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage }
+    })
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    const stepping = (async () => {
+      for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1, agentId: 'a1' })) {
+      }
+    })()
+    await clock.advance(30_000)
+    await stepping
+    const ui = await mountPane(surface, $)
+    expect((await ui.findAll({ type: 'Text' })).find(text => /^ +\d+m\d+s$/.test(text.text ?? ''))?.text).toBe('  4m30s')
+  })
+
+  test(`${surface}: a finished agent's cache row dims and reads "if resumed" while it stays warm`, async ($, on) => {
+    const { agent } = stoppable(on)
+    on('turn.step', async function* ($, e) {
+      const usage = { model: 'claude-opus-5-5', input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 }
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage }
+    })
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1, agentId: 'a1' })) {
+    }
+    const ui = await mountPane(surface, $)
+    const P = paletteOf('classic', false)
+    const row = async () => {
+      const time = (await ui.findAll({ type: 'Text' })).find(text => /^ +(\d+m\d+s|cold)$/.test(text.text ?? ''))
+      return [time?.text, time?.props.color, Boolean(await ui.find({ type: 'Text', text: ' if resumed' }))]
+    }
+    expect(await row()).toEqual(['  5m00s', P.ok, false])
+    agent.status = 'completed'
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
+    expect(await row()).toEqual(['  5m00s', P.muted, true])
+  })
+
+  test(`${surface}: a confirmed stop runs a red fuse round its card, which a refusal drains back`, async ($, on) => {
+    const { clock, agent } = stoppable(on)
+    const P = paletteOf('classic', false)
+    let answer: { deny?: string } = {}
+    on('tool.call', async () => {
+      await clock.sleep(240)
+      if (answer.deny === undefined) agent.status = 'killed'
+      return answer.deny === undefined ? { result: {} as never } : { deny: answer.deny }
+    })
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    const ui = await mountPane(surface, $)
+    const lit = async () => {
+      const sides = await Promise.all(['top', 'right', 'left', 'bottom'].map(side => ui.find({ key: `fuse-${side}-a1` })))
+      return sides.reduce((sum, box) => sum + [...(box?.text ?? '')].filter(cell => cell !== '\n').length, 0)
+    }
+    const look = async () => [(await ui.find({ key: 'agent-a1' }))?.props.borderColor, (await ui.find({ key: 'stop-a1' }))?.text ?? null] as const
+    const burn = async (beats: number) => {
+      const seen: number[] = []
+      for (let beat = 0; beat < beats; beat++) seen.push(await clock.advance(BEAT).then(lit))
+      return seen
+    }
+
+    answer = { deny: 'The user declined to stop the agent' }
+    await ui.press({ key: 'stop-a1' })
+    const refused = ui.press({ key: 'stop-a1' })
+    await clock.settle()
+    expect([await lit(), ...(await look()), Boolean(await ui.find({ type: 'Text', text: 'stopping…' }))]).toEqual([0, P.accent, null, true])
+    const lighting = await burn(9)
+    expect(lighting.every((cells, i) => cells > (lighting[i - 1] ?? 0))).toBe(true)
+    const draining = await burn(20)
+    expect([draining.every((cells, i) => cells <= (draining[i - 1] ?? lighting.at(-1)!)), draining.at(-1), ...(await look())]).toEqual([true, 0, P.accent, '■ Stop'])
+
+    answer = {}
+    await ui.press({ key: 'stop-a1' })
+    const stopped = ui.press({ key: 'stop-a1' })
+    await clock.settle()
+    const burnt = await burn(25)
+    const peak = Math.max(...burnt)
+    const card = (await ui.find({ key: 'agent-a1' }))!
+    expect([burnt.indexOf(peak) > 15, burnt.at(-1), card.props.borderColor, Boolean(await ui.find({ type: 'Text', text: '✗ killed' }))]).toEqual([true, 0, P.bad, true])
+    await Promise.all([refused, stopped])
+  })
+
+  test(`${surface}: an agent's card counts down its prompt cache, its lifetime from the agent's request records`, async ($, on) => {
+    engine(on)
+    const clock = mock.clock(on)
+    const ids = ['a1', 'a2', 'a3']
+    mockSession(on, { agents: () => ids.map(id => ({ id, description: id, type: 'Explore', status: 'running' as AgentStatus })) })
+    on('process.run', () => NO_GIT)
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }))
+    const input = (id: string | undefined) => 10 * (ids.indexOf(id ?? '') + 1)
+    on('turn.step', async function* ($, e) {
+      const usage = { model: 'claude-opus-5-5', input_tokens: input(e.agentId), output_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 }
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage }
+    })
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    const step = async (agentId: string) => {
+      await $.turn.start({ text: 'go', turnId: agentId, agentId })
+      for await (const _ of $.turn.step({ turnId: agentId, index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1, agentId })) {
+      }
+    }
+    const record = (agentId: string, split: Record<string, number>) =>
+      $.telemetry.log(
+        apiRequest({ query_source: 'agent:builtin:Explore', cost_usd: 0.01, input_tokens: input(agentId), output_tokens: 100, cache_read_tokens: 1000, cache_creation_tokens: 500, ...split }),
+      )
+    await step('a1')
+    await record('a1', { cache_creation_5m_tokens: 0, cache_creation_1h_tokens: 500 })
+    await record('a2', { cache_creation_5m_tokens: 0, cache_creation_1h_tokens: 500 })
+    await step('a2')
+    await step('a3')
+    await record('a3', { cache_creation_5m_tokens: 500, cache_creation_1h_tokens: 0 })
+    const ui = await mountPane(surface, $)
+    const caches = async () =>
+      (await ui.findAll({ type: 'Text' }))
+        .filter(text => text.props.color !== undefined)
+        .map(text => text.text ?? '')
+        .filter(text => /^ +(\d+h\d+m|\d+m\d+s|\d+s|cold)$/.test(text))
+    const bars = async () => Promise.all(['a1', 'a2', 'a3'].map(async id => Boolean(await ui.find({ key: `cache-left-${id}` }))))
+    expect([await caches(), await bars()]).toEqual([['  1h00m', '  1h00m', '  5m00s'], [true, true, true]])
+
+    await clock.advance(301_000)
+    expect(await caches()).toEqual([' 54m59s', ' 54m59s', '   cold'])
+  })
+
+  test(`${surface}: the session card counts what auto mode's classifier allowed and blocked`, async ($, on) => {
+    engine(on)
+    mock.clock(on)
+    const decision = (attributes: Record<string, string>) =>
+      $.telemetry.log({ to: 'collector', event: 'tool_decision', attributes: { tool_name: 'Bash', ...attributes }, loggedAt: '2026-10-15T00:00:00.000Z' })
+    const before = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    expect(await before.find({ type: 'Text', text: 'auto mode' })).toBeUndefined()
+    await before.unmount()
+
+    await decision({ decision: 'accept', source: 'config', classifier_verdict: 'allow', permission_mode: 'auto' })
+    await decision({ decision: 'accept', source: 'config', classifier_verdict: 'allow', permission_mode: 'auto' })
+    await decision({ decision: 'reject', source: 'config', classifier_verdict: 'block', permission_mode: 'auto' })
+    await decision({ decision: 'reject', source: 'config', classifier_verdict: 'unavailable', permission_mode: 'auto' })
+    await decision({ decision: 'accept', source: 'user_temporary', permission_mode: 'default' })
+    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    expect(await ui.find({ type: 'Text', text: 'auto mode' })).toBeDefined()
+    const counts = await Promise.all(['allowed', 'blocked'].map(async key => (await ui.find({ type: 'Text', in: `n-session-${key}` }))?.text))
+    expect(counts).toEqual(['2', '1'])
+  })
+
   if (surface === 'terminal') test(`${surface}: a pasted screenshot gets a button that opens it until its placeholder goes`, async ($, on) => {
     engine(on)
+    const clock = mock.clock(on)
     mock.env(on, { HOME: '/home/me', OS: 'Windows_NT', TEMP: 'C:\\Temp' })
     on('session.id', () => ({ value: 'abc' }))
     let draft = 'look '
-    on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+    let reads = 0
+    on('prompt.read', () => (reads++, { value: { text: draft, cursor: draft.length } }))
     on('prompt.edit', () => ({ text: draft, cursor: draft.length }))
+    on('prompt.change', ($, e) => ({ text: e.text }))
     const ran: string[][] = []
     on('process.run', ($, e) => (ran.push([...e.argv]), {
       value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -851,6 +1240,58 @@ for (const surface of ['terminal', 'desktop'] as const) {
     draft = 'look '
     await edit({ origin: { kind: 'composer' }, text: 'look [Image #1] ', cursor: 16, start: 5, end: 16, inputText: '' })
     expect(await settle(false)).toBe(false)
+
+    const change = (e: PromptChangeInput) => ($.prompt as unknown as { change: (e: PromptChangeInput) => Promise<unknown> }).change(e)
+    await change({ origin: { kind: 'history' }, text: 'again [Image #1] ', cursor: 17 })
+    expect(await settle(true)).toBe(true)
+    await change({ origin: { kind: 'clear' }, text: '', cursor: 0 })
+    expect(await settle(false)).toBe(false)
+    await clock.advance(3000)
+    expect([reads, ran.filter(argv => argv[0] === 'powershell').length]).toEqual([0, 1])
+  })
+
+  if (surface === 'terminal') test(`${surface}: a screenshot's button goes with a broken placeholder, a capture that lands late shows none, and a recall reads no clipboard`, async ($, on) => {
+    engine(on)
+    mock.clock(on)
+    mock.env(on, { HOME: '/home/me', OS: 'Windows_NT', TEMP: 'C:\\Temp' })
+    on('session.id', () => ({ value: 'abc' }))
+    let draft = ''
+    on('prompt.edit', () => ({ text: draft, cursor: draft.length }))
+    on('prompt.change', ($, e) => ({ text: e.text }))
+    let captures = 0
+    let land = () => {}
+    on('process.run', async ($, e) => {
+      if (e.argv[0] === 'powershell') {
+        captures++
+        if (captures === 2) await new Promise<void>(resolve => (land = resolve))
+      }
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: BAND })
+    const settle = async (key: string, want: boolean) => {
+      let isShown = Boolean(await ui.find({ key }))
+      for (let i = 0; i < 50 && isShown !== want; i++) isShown = Boolean(await ui.find({ key }))
+      return isShown
+    }
+    const edit = (e: PromptEditInput) => ($.prompt as unknown as { edit: (e: PromptEditInput) => Promise<unknown> }).edit(e)
+    const change = (e: PromptChangeInput) => ($.prompt as unknown as { change: (e: PromptChangeInput) => Promise<unknown> }).change(e)
+
+    draft = '[Image #1] '
+    await edit({ origin: { kind: 'composer' }, text: '', cursor: 0, start: 0, end: 0, inputText: draft })
+    expect(await settle('open-image-1', true)).toBe(true)
+    draft = '[Image #1 '
+    await edit({ origin: { kind: 'composer' }, text: '[Image #1] ', cursor: 10, start: 9, end: 10, inputText: '' })
+    expect(await settle('open-image-1', false)).toBe(false)
+
+    draft = '[Image #2] '
+    await edit({ origin: { kind: 'composer' }, text: '', cursor: 0, start: 0, end: 0, inputText: draft })
+    await change({ origin: { kind: 'clear' }, text: '', cursor: 0 })
+    land()
+    expect(await settle('open-image-2', true)).toBe(false)
+
+    await change({ origin: { kind: 'history' }, text: 'old [Image #3] ', cursor: 15 })
+    expect(await settle('open-image-3', true)).toBe(false)
+    expect(captures).toBe(2)
   })
 
   test(`${surface}: the box's sidebar control opens and closes the panel, its chevron turning`, async ($, on) => {
@@ -1340,6 +1781,52 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await card()).toBe(true)
   })
 
+  test(`${surface}: an agent's advice is read from its own transcript, onto its card, the advisor's card and the cost split`, async ($, on) => {
+    engine(on)
+    const clock = mock.clock(on)
+    mockSession(on, { model: () => 'claude-opus-5-5', agents: () => [{ id: 'a1', description: 'a1', type: 'Explore', status: 'running' as AgentStatus }] })
+    on('process.run', () => NO_GIT)
+    const main = '/home/me/.claude/projects/-home-me-repo/abc.jsonl'
+    const own = '/home/me/.claude/projects/-home-me-repo/abc/subagents/agent-a1.jsonl'
+    const advice = { type: 'advisor_message', model: 'claude-fable-5-1', input_tokens: 1000, output_tokens: 100 }
+    const row = (id: string) => JSON.stringify({ type: 'assistant', isSidechain: true, message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 2, output_tokens: 3, iterations: [{ type: 'message' }, advice] } } })
+    let isAdvised = false
+    const files = (path: string) => (path.replace(/\\/g, '/') === own ? (isAdvised ? [row('m1'), row('m1'), row('m2')].join('\n') : '') : JSON.stringify({ type: 'user', message: { content: 'hi' } }))
+    const reads: string[] = []
+    on('fs.exists', ($, e) => ({ value: [main, own].includes(e.path.replace(/\\/g, '/')) }))
+    on('fs.list', () => ({ value: [] }))
+    on('fs.stat', ($, e) => ({ value: { kind: 'file', size: files(e.path).length, mtimeMs: 0, isLink: false } }))
+    on('fs.read', ($, e) => (reads.push(e.path.replace(/\\/g, '/')), { value: files(e.path) }))
+    on('turn.step', async function* ($, e) {
+      const serverToolUses = [{ id: 'adv1', name: 'advisor', input: {}, startedAt: 0, endedAt: 1 }]
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], serverToolUses, stopReason: 'end_turn' as const, usage: null }
+    })
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    reads.length = 0
+    isAdvised = true
+    await $.turn.start({ text: 'go', turnId: 't1', agentId: 'a1' })
+    for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1, agentId: 'a1' })) {
+    }
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
+    await clock.settle()
+    expect([reads.length > 0, reads.every(path => path === own)]).toEqual([true, true])
+
+    await $.telemetry.log(apiRequest({ query_source: 'agent:builtin:Explore', cost_usd: 1, input_tokens: 2, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0 }))
+    const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
+    const figure = async (key: string) => `${key} ${(await pane.find({ type: 'Text', in: `n-${key}` }))?.text}`
+    const want = {
+      'a1-advisor-calls': '2',
+      'a1-advisor-usd': '$0.0300',
+      'advisor-calls': '2',
+      'advisor-usd': '$0.0300',
+      'advisor-agents-calls': '2',
+      'cost-advisor': '$0.0300',
+      'cost-agents': '$0.9700',
+    }
+    expect(await Promise.all(Object.keys(want).map(figure))).toEqual(Object.entries(want).map(([key, text]) => `${key} ${text}`))
+    expect(await pane.find({ type: 'Text', text: '✶ Fable 5.1' })).toBeDefined()
+  })
+
   test(`${surface}: the panel opens by itself in fullscreen only`, async ($, on) => {
     const opened: (true | undefined)[] = []
     engine(on, { opened })
@@ -1435,6 +1922,34 @@ test('alerts: the context alert re-arms below its threshold, the rate alert when
     heard.push(ran.length)
   }
   expect(heard).toEqual([1, 1, 2, 3, 4])
+  expect(new Set(ran.map(env => env.STATUSBOX_SOUND))).toEqual(new Set(['Windows Battery Critical.wav']))
+})
+
+test('alerts: each rate window sounds once until its own reset, whichever of them is higher', async ($, on) => {
+  engine(on)
+  mock.env(on, { HOME: '/home/me', OS: 'Windows_NT' })
+  const ran = alerts(on)
+  const heard: number[] = []
+  const readings = [
+    { five: 85, fiveResets: 'A', seven: 82, sevenResets: 'B' },
+    { five: 82, fiveResets: 'A', seven: 85, sevenResets: 'B' },
+    { five: 85, fiveResets: 'A', seven: 82, sevenResets: 'B' },
+    { five: 85, fiveResets: 'A', seven: 82, sevenResets: 'C' },
+    { five: 85, fiveResets: 'D', seven: 82, sevenResets: 'C' },
+  ]
+  for (const { five, fiveResets, seven, sevenResets } of readings) {
+    await $.session.measure({
+      context: { tokens: 10, window: 100, percent: 10 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: five, resetsAt: fiveResets },
+        { kind: 'seven_day', percentUsed: seven, resetsAt: sevenResets },
+      ],
+      changed: ['context', 'rateLimits'],
+    })
+    for (let i = 0; i < 20; i++) await nudge($)
+    heard.push(ran.length)
+  }
+  expect(heard).toEqual([1, 1, 1, 2, 3])
   expect(new Set(ran.map(env => env.STATUSBOX_SOUND))).toEqual(new Set(['Windows Battery Critical.wav']))
 })
 

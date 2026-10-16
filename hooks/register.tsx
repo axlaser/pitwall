@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionUsage, TurnStepInput } from 'claude-code'
 
-import type { Advisor, Agent, Alerted, Cache, Git, Menu, Motion, Place, Preview, RateWindow, Reading, Speed, Spend, Tokens } from '../types'
+import type { Advisor, Agent, Alerted, Cache, Git, Menu, Motion, Place, Preview, RateWindow, Reading, Speed, Spend, Tokens, Verdicts } from '../types'
 import { figure, formatElapsed } from './count'
 import { RAMP_HIGH, RAMP_MID } from './bar'
 import { READY_CELLS, WORKING_CELLS } from './claude'
@@ -22,9 +22,11 @@ const place = atom({ plugin: 'statusbox', key: 'place' } as const, null)
 const totals = atom({ plugin: 'statusbox', key: 'totals' } as const, ZERO)
 const last = atom({ plugin: 'statusbox', key: 'last' } as const, ZERO)
 const advisor = atom({ plugin: 'statusbox', key: 'advisor' } as const, null)
+const agentAdvisor = atom({ plugin: 'statusbox', key: 'agentAdvisor' } as const, {} as Record<string, Advisor>)
 const override = atom({ plugin: 'statusbox', key: 'override' } as const, null)
 const turns = atom({ plugin: 'statusbox', key: 'turns' } as const, 0)
 const agents = atom({ plugin: 'statusbox', key: 'agents' } as const, [])
+const stopArmed = atom({ plugin: 'statusbox', key: 'stopArmed' } as const, null)
 const NO_SPEND: Spend = { main: 0, agents: 0, background: 0 }
 const spend = atom({ plugin: 'statusbox', key: 'spend' } as const, NO_SPEND)
 const NO_SPEED: Speed = { firstOutputMs: null, replyMs: null, startedAt: null }
@@ -43,8 +45,10 @@ const chatSkinned = atom({ plugin: 'statusbox', key: 'chatSkinned' } as const, t
 const grounded = atom({ plugin: 'statusbox', key: 'grounded' } as const, true)
 const took = atom({ plugin: 'statusbox', key: 'took' } as const, {} as Record<string, number>)
 const TOOK_KEPT = 200
-const NOT_ALERTED: Alerted = { context: false, rate: false, resetsAt: null }
+const NOT_ALERTED: Alerted = { context: false, rate: {} }
 const alerted = atom({ plugin: 'statusbox', key: 'alerted' } as const, NOT_ALERTED)
+const NO_VERDICTS: Verdicts = { allowed: 0, blocked: 0 }
+const verdicts = atom({ plugin: 'statusbox', key: 'verdicts' } as const, NO_VERDICTS)
 
 const CHANGELOG = 'https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md'
 const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -65,6 +69,8 @@ const sparkInk = (P: Palette) => ({ accent: P.accent, glowHex: P.accentShine, ok
 const barInk = (P: Palette) => ({ ramp: P.ramp, track: P.track, paceColor: P.mark })
 const ENDED_SHOWN = 5
 const ENDED = new Set(['completed', 'failed', 'killed'])
+const LINGER_MS = 60_000
+const STOP_ARM_MS = 4000
 const RATE: Record<string, [string, number]> = { five_hour: ['5-hour', 18_000], seven_day: ['7-day', 604_800] }
 type Price = {
   inputTokens: number
@@ -84,6 +90,12 @@ let orgPricing: { multiplier: number; overrides: Record<string, Price> } | null 
 const FIVE_MINUTES = 300_000
 const HOUR = 3_600_000
 const LABEL_W = 7
+const CACHE_LABEL = 'cache '
+const TITLE_TAIL = 10
+const STOPPING = 'stopping…'
+const STATE_CELLS = Math.max(WORKING_CELLS, STOPPING.length)
+const IF_RESUMED = ' if resumed'
+const LEFT_CELLS = 7
 const BAR_WIDTH = 30
 const MIN_INNER = 30
 
@@ -101,7 +113,6 @@ export const register: Register = (on, options) => {
         .now()
         .then(t => update($, now, () => t))
         .catch(() => undefined)
-      void syncPreviews($).catch(() => undefined)
       if (isAwaitingConversation) void awaitConversation($).catch(() => undefined)
     })
     return r
@@ -147,11 +158,14 @@ export const register: Register = (on, options) => {
       await update($, totals, () => ZERO)
       await update($, last, () => ZERO)
       await update($, advisor, () => null)
+      await update($, agentAdvisor, () => ({}))
       await update($, override, () => null)
       await update($, turns, () => 0)
       await update($, spend, () => NO_SPEND)
       await update($, speed, () => NO_SPEED)
       await update($, cache, () => null)
+      await update($, verdicts, () => NO_VERDICTS)
+      await update($, stopArmed, () => null)
       await update($, meta, m => m && { ...m, startedAt: t })
     }
     return next(e)
@@ -221,12 +235,13 @@ export const register: Register = (on, options) => {
     } else {
       await update($, agents, list => list.map(a => (a.id === id ? { ...a, model, effort } : a)))
     }
+    const sentAt = await $.clock.now()
     const result = yield* next(sent)
     if (id !== undefined && result.usage) {
       const u = result.usage
       const key = usageKey(u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens)
-      const usd = take(unmatchedCosts, key)
-      if (usd === undefined) remember(unmatchedSteps, key, id)
+      const cost = take(unmatchedCosts, key)
+      if (cost === undefined) remember(unmatchedSteps, key, id)
       const prompt = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
       await update($, agents, list =>
         list.map(a =>
@@ -239,7 +254,9 @@ export const register: Register = (on, options) => {
                 cacheRead: (a.cacheRead ?? 0) + u.cache_read_input_tokens,
                 cacheWrite: (a.cacheWrite ?? 0) + u.cache_creation_input_tokens,
                 calls: (a.calls ?? 0) + 1,
-                usd: a.usd + (usd ?? 0),
+                usd: a.usd + (cost?.usd ?? 0),
+                cacheAt: sentAt,
+                cacheTtlMs: cost ? cost.ttl(a.cacheTtlMs) : (a.cacheTtlMs ?? FIVE_MINUTES),
               }
             : a,
         ),
@@ -254,8 +271,9 @@ export const register: Register = (on, options) => {
     // session.measure fires once per turn
     if (id === undefined) await refreshReading($)
     if (result.serverToolUses?.some(use => use.name === 'advisor')) {
-      isAdvisorPending = true
-      void refreshAdvisor($).catch(() => undefined)
+      if (id === undefined) isAdvisorPending = true
+      else advisedAgents.add(id)
+      void (id === undefined ? refreshAdvisor($) : refreshAgentAdvisor($, id)).catch(() => undefined)
     }
     return result
   })
@@ -264,6 +282,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.agentId !== undefined) {
       await refreshAgents($)
+      if (advisedAgents.delete(e.agentId)) await refreshAgentAdvisor($, e.agentId)
       return r
     }
     await update($, speed, x => ({ ...x, replyMs: e.durationMs, startedAt: null }))
@@ -341,13 +360,20 @@ export const register: Register = (on, options) => {
 
   on('prompt.edit', async ($, e, next) => {
     const r = await next(e)
-    if (/\[Image #\d+\]/.test(e.inputText + e.text.slice(e.start, e.end))) void syncPreviews($).catch(() => undefined)
+    if (/\[Image #\d+/.test(e.text + r.text)) void syncPreviews($, r.text, true).catch(() => undefined)
+    return r
+  })
+
+  on('prompt.change', async ($, e, next) => {
+    const r = await next(e)
+    void syncPreviews($, e.text, e.origin.kind === 'engine').catch(() => undefined)
     return r
   })
 
   on('prompt.submit', async ($, e, next) => {
     isAwaitingConversation = false
     scheduleGit($)
+    inPrompt = new Set()
     await update($, previews, () => [])
     await update($, menu, () => null)
     await update($, motion, ({ menu: _, 'menu-room': __, ...rest }) => rest)
@@ -364,7 +390,8 @@ export const register: Register = (on, options) => {
       const key = spendClass(a.query_source)
       await update($, spend, x => ({ ...x, [key]: x[key] + usd }))
       if (key === 'main') {
-        const t = await $.clock.now()
+        const took = Number(a.duration_ms)
+        const t = (await $.clock.now()) - (took > 0 ? took : 0)
         await update($, cache, c => ({
           at: t,
           ttlMs: ttlOf(a.cache_creation_5m_tokens, a.cache_creation_1h_tokens, c?.ttlMs),
@@ -374,11 +401,15 @@ export const register: Register = (on, options) => {
       if (key === 'agents') {
         const tokens = usageKey(Number(a.input_tokens), Number(a.output_tokens), Number(a.cache_read_tokens), Number(a.cache_creation_tokens))
         const id = take(unmatchedSteps, tokens)
-        if (id === undefined) remember(unmatchedCosts, tokens, usd)
-        else await update($, agents, list => list.map(x => (x.id === id ? { ...x, usd: x.usd + usd } : x)))
+        const ttl = (was: number | undefined) => ttlOf(a.cache_creation_5m_tokens, a.cache_creation_1h_tokens, was)
+        if (id === undefined) remember(unmatchedCosts, tokens, { usd, ttl })
+        else await update($, agents, list => list.map(x => (x.id === id ? { ...x, usd: x.usd + usd, cacheTtlMs: ttl(x.cacheTtlMs) } : x)))
       }
       await refreshReading($)
     }
+    const verdict = e.event === 'tool_decision' ? e.attributes.classifier_verdict : undefined
+    if (verdict === 'allow') await update($, verdicts, x => ({ ...x, allowed: x.allowed + 1 }))
+    if (verdict === 'block') await update($, verdicts, x => ({ ...x, blocked: x.blocked + 1 }))
     return r
   })
 
@@ -587,10 +618,12 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { P } = await paint($)
-    const [ags, t, adv, r, sp, n, m, fast, c, folds, moving, bytes] = await Promise.all([
+    const [ags, armed, t, mainAdvisor, agentAdvisors, r, sp, n, m, fast, c, folds, moving, bytes, v] = await Promise.all([
       read($, agents),
+      read($, stopArmed),
       read($, now),
       read($, advisor),
+      read($, agentAdvisor),
       read($, reading),
       read($, spend),
       read($, turns),
@@ -600,7 +633,11 @@ export const register: Register = (on, options) => {
       read($, folded),
       read($, motion),
       read($, transcriptBytes),
+      read($, verdicts),
     ])
+    const viewing = e.props.view.agentId
+    const fromAgents = Object.values(agentAdvisors).reduce<Advisor | null>(addAdvisor, null)
+    const adv = addAdvisor(mainAdvisor, fromAgents)
     const elements = $.ui.resolve(e)
     const { Box, Button, Text } = elements
     const Client = 'Client' in elements ? elements.Client : undefined
@@ -614,8 +651,11 @@ export const register: Register = (on, options) => {
       ...ags.filter(a => a.doneAt === null),
       ...ags.filter(a => a.doneAt !== null).sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0)).slice(0, ENDED_SHOWN),
     ]
+    const isStopping = (a: Agent) => halting.has(a.id) && a.doneAt === null
     const state = (a: Agent) =>
-      a.doneAt === null && Client ? (
+      isStopping(a) ? (
+        <Text color={P.bad}>{STOPPING}</Text>
+      ) : a.doneAt === null && Client ? (
         <Client key={`working-${a.id}`} module="./claude.tsx" width={WORKING_CELLS} props={{ isWorking: true, ...sparkInk(P) }} />
       ) : a.doneAt === null ? (
         <Text color={P.accent}>Working</Text>
@@ -653,20 +693,20 @@ export const register: Register = (on, options) => {
     const share = adv?.usd != null && r?.costUsd ? Math.min(100, Math.round((adv.usd / r.costUsd) * 100)) : null
     const meter = inner - 4
     const half = Math.floor((meter - 2) / 2)
-    const grid = (owner: string, pairs: [string, Span[]][]) => (
+    const grid = (owner: string, pairs: [string | Span[], Span[]][]) => (
       <Box justifyContent="space-between">
         {pairs.map(([label, value]) => (
           <Box width={half} justifyContent="space-between">
-            <Text dimColor>{label}</Text>
+            {typeof label === 'string' ? <Text dimColor>{label}</Text> : <Text>{label.map(draw)}</Text>}
             {figures(owner, value)}
           </Box>
         ))}
       </Box>
     )
-    const flat = (percent: number, color: string) => (
+    const flat = (percent: number, color: string, width = meter) => (
       <Text>
-        <Text color={color}>{'━'.repeat(Math.round((Math.min(100, Math.max(0, percent)) / 100) * meter))}</Text>
-        <Text color={P.muted}>{'─'.repeat(meter - Math.round((Math.min(100, Math.max(0, percent)) / 100) * meter))}</Text>
+        <Text color={color}>{'━'.repeat(Math.round((Math.min(100, Math.max(0, percent)) / 100) * width))}</Text>
+        <Text color={P.muted}>{'─'.repeat(width - Math.round((Math.min(100, Math.max(0, percent)) / 100) * width))}</Text>
       </Text>
     )
     const sections: Section[] = []
@@ -732,7 +772,7 @@ export const register: Register = (on, options) => {
 
     const spent = sp.main + sp.agents + sp.background
     const total = r?.costUsd == null ? spent || null : Math.max(r.costUsd, spent)
-    const parts = total === null ? [] : costParts(P, sp, total, adv?.usd ?? 0)
+    const parts = total === null ? [] : costParts(P, sp, total, mainAdvisor?.usd ?? 0, fromAgents?.usd ?? 0)
     const { firstOutputMs: first, replyMs: reply } = fast
     const running = fast.startedAt == null || t === 0 ? null : Math.max(0, t - fast.startedAt)
     const ticking = (label: string, ms: number) => (
@@ -761,6 +801,14 @@ export const register: Register = (on, options) => {
             <Box justifyContent="space-between">
               <Text dimColor>transcript</Text>
               <Text color={P.text}>{formatBytes(bytes)}</Text>
+            </Box>,
+          ]),
+      ...(v.allowed + v.blocked === 0
+        ? []
+        : [
+            <Box justifyContent="space-between">
+              <Text dimColor>auto mode</Text>
+              {figures('session', [num('allowed', v.allowed, 'int', P.text), dim(' allowed · '), num('blocked', v.blocked, 'int', v.blocked > 0 ? P.bad : P.text), dim(' blocked')])}
             </Box>,
           ]),
       ...(total === null
@@ -793,7 +841,7 @@ export const register: Register = (on, options) => {
     ]
     sections.push({
       name: 'SESSION',
-      summary: [`${n} ${n === 1 ? 'message' : 'messages'}`, ...(total === null ? [] : [figure('usd', total)])].join(' · '),
+      summary: [`${n} ${n === 1 ? 'message' : 'messages'}`, ...(total === null ? [] : [figure('usd', total)]), ...(v.blocked > 0 ? [`${v.blocked} blocked`] : [])].join(' · '),
       ...card('round', P.accent, sessionLines),
     })
 
@@ -845,7 +893,7 @@ export const register: Register = (on, options) => {
           <Text color={P.alt} bold>{`✶ ${prettify(adv.model)}`}</Text>
           {figures('advisor', [num('calls', adv.calls, 'int', P.text), dim(adv.calls === 1 ? ' call' : ' calls')])}
         </Box>,
-        ...advisorRows(P, adv, share).map(row => line('advisor', row)),
+        ...advisorRows(P, adv, share, fromAgents).map(row => line('advisor', row)),
         ...(share === null
           ? []
           : [Client ? <Client key="advisor-share" module="./bar.tsx" width={meter} props={{ percent: share, isWorking: false, width: meter, ...barInk(P) }} /> : flat(share, P.alt)]),
@@ -858,28 +906,121 @@ export const register: Register = (on, options) => {
     }
 
     const working = ags.filter(a => a.doneAt === null).length
-    const agentItems = shown.flatMap((a, i) => [
-      ...(i === 0 ? [] : [{ rows: 1, body: gap }]),
-      card(
-        'round',
-        a.doneAt === null ? P.accent : a.status === 'completed' ? P.ok : P.bad,
+    const typeRoom = Math.max(6, meter - STATE_CELLS - TITLE_TAIL)
+    const fuseOf = (id: string, border: 'round' | 'double', color: string, rows: number, at: number) => {
+      const [tl, tr, bl, br, across, down] = FRAMES[border]
+      const k = Math.round(at * (inner + rows - 1))
+      const side = (n: number, corner: string) => Array.from({ length: n }, (_, i) => (i === rows - 2 ? corner : down)).join('\n')
+      const right = Math.max(0, Math.min(k - inner, rows - 1))
+      const left = Math.max(0, Math.min(k - 1, rows - 1))
+      const bottom = Math.max(0, Math.min(k - rows, inner - 1))
+      return [
+        ...(k > 0 ? [[`fuse-top-${id}`, 0, 0, (tl + across.repeat(inner - 2) + tr).slice(0, Math.min(k, inner))] as const] : []),
+        ...(right > 0 ? [[`fuse-right-${id}`, 1, inner - 1, side(right, br)] as const] : []),
+        ...(left > 0 ? [[`fuse-left-${id}`, 1, 0, side(left, bl)] as const] : []),
+        ...(bottom > 0 ? [[`fuse-bottom-${id}`, rows - 1, 1, (across.repeat(inner - 2) + br).slice(0, bottom)] as const] : []),
+      ].map(([key, top, x, text]) => (
+        <Box key={key} position="absolute" top={top} left={x}>
+          <Text color={color}>{text}</Text>
+        </Box>
+      ))
+    }
+    const agentItems = shown.map((a, i) => {
+      const fuse = moving[`halt-${a.id}`]
+      const drop = moving[`drop-${a.id}`]
+      const border = a.id === viewing ? 'double' : 'round'
+      const tone = a.id === viewing || fuse !== undefined ? P.accent : isStopping(a) ? P.bad : a.doneAt === null ? P.accent : a.status === 'completed' ? P.ok : P.bad
+      const c = card(
+        border,
+        tone,
         [
           <Box justifyContent="space-between">
-            <Text bold wrap="truncate-end">{a.type}</Text>
+            {unviewable.has(a.id) ? (
+              <Text bold wrap="truncate-end">{clip(a.type, typeRoom)}</Text>
+            ) : (
+              <Button plain key={`view-${a.id}`} hover={{ scope: `view-${a.id}` }} onPress={() => void viewAgent($, a.id === viewing ? undefined : a).catch(() => undefined)}>
+                <Text bold wrap="truncate-end" color={a.id === viewing ? P.accent : P.text}>{clip(a.type, typeRoom)}</Text>
+                <Text color={a.id === viewing ? P.accent : P.muted} hover={{ scope: `view-${a.id}`, color: a.id === viewing ? P.accent : P.text }}>
+                  {a.id === viewing ? ' ‹' : ' ›'}
+                </Text>
+              </Button>
+            )}
             <Box flexShrink={0}>
               {state(a)}
               {(a.doneAt !== null || t > 0) && <Text dimColor>{` ${formatElapsed((a.doneAt ?? t) - a.startedAt)}`}</Text>}
             </Box>
           </Box>,
-          <Text dimColor wrap="truncate-end">{a.description || a.type}</Text>,
+          <Box justifyContent="space-between">
+            <Text dimColor wrap="truncate-end">{a.description || a.type}</Text>
+            <Box flexShrink={0} marginLeft={1}>
+              {isStopping(a) ? null : a.doneAt === null ? (
+                <Button plain key={`stop-${a.id}`} hover={{ scope: `stop-${a.id}` }} onPress={() => void stopAgent($, a).catch(() => undefined)}>
+                  <Text color={P.bad} bold={armed === a.id} hover={{ scope: `stop-${a.id}`, bold: true }}>
+                    {armed === a.id ? '■ Confirm' : '■ Stop'}
+                  </Text>
+                </Button>
+              ) : (
+                <Button plain key={`dismiss-${a.id}`} onPress={() => void dismissAgent($, a.id).catch(() => undefined)}>
+                  <Text color={P.muted}>✕ dismiss</Text>
+                </Button>
+              )}
+            </Box>
+          </Box>,
           ...(() => {
             const { head, cells } = agentRows(P, a)
-            return [...(head ? [spread(a.id, head)] : []), ...cells.map(pairs => grid(a.id, pairs))]
+            const advised = agentAdvisors[a.id]
+            return [
+              ...(head ? [spread(a.id, head)] : []),
+              ...cells.map(pairs => grid(a.id, pairs)),
+              ...(advised ? [spread(a.id, [[s(`✶ ${prettify(advised.model)}`, P.alt)], advisedBy(P, advised, 'advisor')])] : []),
+            ]
           })(),
+          ...(a.cacheAt == null
+            ? []
+            : (() => {
+                const left = Math.max(0, a.cacheAt + a.cacheTtlMs - t)
+                const tail = a.doneAt !== null && left > 0 ? IF_RESUMED : ''
+                const tint = left === 0 || a.doneAt !== null ? P.muted : left < a.cacheTtlMs / 5 ? P.warn : P.ok
+                const percent = (left / a.cacheTtlMs) * 100
+                const width = meter - CACHE_LABEL.length - LEFT_CELLS - tail.length
+                return [
+                  <Box>
+                    <Text dimColor>{CACHE_LABEL}</Text>
+                    {Client ? (
+                      <Client key={`cache-left-${a.id}`} module="./bar.tsx" width={width} props={{ percent, isWorking: false, width, color: tint, ...barInk(P) }} />
+                    ) : (
+                      flat(percent, tint, width)
+                    )}
+                    <Text color={tint}>{(left > 0 ? formatElapsed(left) : 'cold').padStart(LEFT_CELLS)}</Text>
+                    {tail && <Text dimColor>{tail}</Text>}
+                  </Box>,
+                ]
+              })()),
+          ...(a.id === viewing ? [<Text color={P.accent}>● viewing</Text>] : []),
         ],
         { key: `agent-${a.id}`, isDim: a.status === 'completed' },
-      ),
-    ])
+      )
+      const lead = i > 0 && !(i === 1 && moving[`drop-${shown[0]?.id}`] !== undefined)
+      const trail = i === 0 && shown.length > 1 && drop !== undefined
+      const full = c.rows + (lead || trail ? 1 : 0)
+      const out = drop ? Math.round(inner * Math.min(1, (1 - drop.openness) * 2) ** 2) : 0
+      const rows = drop ? Math.round(full * Math.min(1, drop.openness * 2)) : full
+      return {
+        rows,
+        body: () => (
+          <Box key={`slot-${a.id}`} flexDirection="column" flexShrink={0} {...(drop && { height: rows, overflow: 'hidden' as const })}>
+            <Box flexDirection="column" flexShrink={0} marginLeft={out} width={inner}>
+              {lead && gap()}
+              <Box flexDirection="column">
+                {c.body()}
+                {fuse && fuseOf(a.id, border, P.bad, c.rows, fuse.openness)}
+              </Box>
+              {trail && gap()}
+            </Box>
+          </Box>
+        ),
+      }
+    })
     const agentBody = agentItems.length > 0 ? agentItems : [{ rows: 1, body: () => <Text dimColor>No agents in this session yet.</Text> }]
     sections.push({
       name: 'AGENTS',
@@ -895,6 +1036,14 @@ export const register: Register = (on, options) => {
     return (
       <Box width={columns} minHeight={bodyRows} overflow="hidden" flexShrink={0}>
         <Box key="slide" flexDirection="column" paddingX={1} marginLeft={offset} width={columns} flexShrink={0}>
+          {viewing !== undefined && (
+            <Box marginBottom={1} justifyContent="space-between">
+              <Button plain key="view-main" onPress={() => void viewAgent($).catch(() => undefined)}>
+                <Text color={P.accent} bold>‹ main conversation</Text>
+              </Button>
+              <Text dimColor wrap="truncate-end">{`viewing ${ags.find(a => a.id === viewing)?.type ?? 'an agent'}`}</Text>
+            </Box>
+          )}
           {sections.map((section, i) => {
             const isOpen = !folds.includes(section.name)
             const fold = moving[`fold-${section.name}`]
@@ -950,6 +1099,7 @@ type Row = { section: number; label: string; content: Span[]; isTight?: boolean 
 type Section = { name: string; summary: string; tint?: string; rows: number; body: (clip?: number) => JSX.Element }
 
 const BORDER_ROWS = 2
+const FRAMES = { round: ['╭', '╮', '╰', '╯', '─', '│'], double: ['╔', '╗', '╚', '╝', '═', '║'] } as const
 const held = (clip?: number) => (clip === undefined ? {} : { height: Math.max(2, clip), overflow: 'hidden' as const })
 
 const s = (t: string, c?: string): Span => ({ text: t, color: c })
@@ -1161,7 +1311,16 @@ async function toggleFold($: $, name: string): Promise<void> {
 const ROW_MS = 24
 const MOST_MS = 320
 const SLIDE_MS = 240
+const DROP_MS = 400
+const HALT_MS = 480
 const foldRows = new Map<string, number>()
+
+function stepOf(key: string): number {
+  if (key === 'panel') return ROW_MS / SLIDE_MS
+  if (key.startsWith('drop-')) return ROW_MS / DROP_MS
+  if (key.startsWith('halt-')) return ROW_MS / HALT_MS
+  return Math.max(1 / (foldRows.get(key) ?? 8), ROW_MS / MOST_MS)
+}
 
 async function move($: $, key: string, to: 0 | 1): Promise<void> {
   await update($, motion, moving => ({ ...moving, [key]: { openness: moving[key]?.openness ?? 1 - to, to } }))
@@ -1180,7 +1339,7 @@ async function stepFolds($: $): Promise<void> {
     for (const [key, { openness, to }] of Object.entries(moving)) {
       const isFromOlderModule = typeof openness !== 'number'
       if (isFromOlderModule) continue
-      const step = key === 'panel' ? ROW_MS / SLIDE_MS : Math.max(1 / (foldRows.get(key) ?? 8), ROW_MS / MOST_MS)
+      const step = stepOf(key)
       const stepped = to === 1 ? Math.min(1, openness + step) : Math.max(0, openness - step)
       const reached = Math.abs(stepped - to) < 1e-9 ? to : stepped
       if (reached !== to) next[key] = { openness: reached, to }
@@ -1192,6 +1351,8 @@ async function stepFolds($: $): Promise<void> {
     return next
   })
   if (shut.includes('menu')) await update($, menu, x => (x?.isClosing ? null : x))
+  const dropped = shut.filter(key => key.startsWith('drop-')).map(key => key.slice('drop-'.length))
+  if (dropped.length > 0) await forget($, dropped)
   if (shut.includes('panel')) {
     await $.ui.close({ id: PANE }).catch(() => undefined)
     left = await update($, motion, ({ panel, ...rest }) => (panel?.to === 0 ? rest : { ...rest, ...(panel && { panel }) }))
@@ -1271,6 +1432,75 @@ function aliasOf(model: string | undefined): string | undefined {
   return family && `${family}${model?.endsWith('[1m]') ? '[1m]' : ''}`
 }
 
+const unviewable = new Set<string>()
+
+// A finished agent the view refuses stays refused: its card drops the press.
+async function viewAgent($: $, agent?: Agent): Promise<void> {
+  const shown = await $.ui.view(agent ? { agentId: agent.id } : {})
+  if (shown.deny === undefined) return
+  if (agent && agent.doneAt !== null) {
+    unviewable.add(agent.id)
+    $.ui.invalidate('ui.render')
+  }
+  $.ui.toast(shown.deny)
+}
+
+let disarm: { cancel: () => void } | null = null
+
+async function stopAgent($: $, agent: Agent): Promise<void> {
+  disarm?.cancel()
+  disarm = null
+  if ((await read($, stopArmed)) !== agent.id) {
+    await update($, stopArmed, () => agent.id)
+    disarm = $.clock.after(STOP_ARM_MS, () => {
+      void read($, stopArmed)
+        .then(x => (x === agent.id ? update($, stopArmed, () => null) : undefined))
+        .catch(() => undefined)
+    })
+    return
+  }
+  await update($, stopArmed, () => null)
+  halting.add(agent.id)
+  await move($, `halt-${agent.id}`, 1)
+  const r = await $.tool
+    .call({ tool: 'TaskStop', task_id: agent.id, consent: `The user pressed "■ Stop" then "■ Confirm" in the statusbox panel to stop agent ${agent.id}` })
+    .catch(() => null)
+  const refusal = r === null ? 'Claude Code cannot stop agents here' : (r.deny ?? (r.isError ? (r.text ?? `The ${agent.type} agent did not stop`) : undefined))
+  if (refusal !== undefined) {
+    halting.delete(agent.id)
+    await move($, `halt-${agent.id}`, 0)
+    $.ui.toast(refusal)
+  }
+  await refreshAgents($)
+}
+
+const halting = new Set<string>()
+const leaving = new Set<string>()
+
+async function dismissAgent($: $, id: string): Promise<void> {
+  if ((await read($, stopArmed)) === id) {
+    disarm?.cancel()
+    disarm = null
+    await update($, stopArmed, () => null)
+  }
+  await dropAgent($, id)
+}
+
+async function dropAgent($: $, id: string): Promise<void> {
+  if (leaving.has(id) || gone.has(id)) return
+  leaving.add(id)
+  await move($, `drop-${id}`, 0)
+}
+
+async function forget($: $, ids: string[]): Promise<void> {
+  for (const id of ids) {
+    gone.add(id)
+    leaving.delete(id)
+    halting.delete(id)
+  }
+  await update($, agents, list => list.filter(a => !ids.includes(a.id)))
+}
+
 async function togglePanel($: $): Promise<void> {
   const [panes, moving] = await Promise.all([$.ui.panes(), read($, motion)])
   if (!panes.some(pane => pane.id === PANE)) await openPanel($)
@@ -1327,7 +1557,7 @@ function bucket(P: Palette, key: string, label: string, arrow: string, value: nu
     : [dim(label), ...arrowPart, s(' '), num(key, value, 'tokens', idle), s(' '), { ...added, dimColor: true }]
 }
 
-function agentRows(P: Palette, a: Agent): { head: [Span[], Span[]] | null; cells: [string, Span[]][][] } {
+function agentRows(P: Palette, a: Agent): { head: [Span[], Span[]] | null; cells: [string | Span[], Span[]][][] } {
   const n = a.calls ?? 0
   const model = a.model ? join(P, [[s(prettify(a.model), P.alt)], a.effort ? [s(a.effort, effortColor(P, a.effort))] : []]) : []
   const calls = n > 0 ? [num('calls', n, 'int', P.text), dim(n === 1 ? ' call' : ' calls')] : []
@@ -1337,20 +1567,37 @@ function agentRows(P: Palette, a: Agent): { head: [Span[], Span[]] | null; cells
   return {
     head,
     cells: [
-      [['in', [num('in', a.in ?? 0, 'tokens', P.info)]], ['out', [num('out', a.out, 'tokens', P.alt)]]],
-      [['cache↑', [num('cacheWrite', a.cacheWrite ?? 0, 'tokens', P.text)]], ['cache↓', [num('cacheRead', a.cacheRead ?? 0, 'tokens', P.text)]]],
+      [
+        [[s('in', P.info)], [num('in', a.in ?? 0, 'tokens', P.info)]],
+        [[s('out', P.alt)], [num('out', a.out, 'tokens', P.alt)]],
+      ],
+      [
+        [[s('cache', P.warn), s('↑', P.muted)], [num('cacheWrite', a.cacheWrite ?? 0, 'tokens', P.warn)]],
+        [[s('cache', P.info), s('↓', P.muted)], [num('cacheRead', a.cacheRead ?? 0, 'tokens', P.info)]],
+      ],
       [['context', [num('context', a.context, 'tokens', P.text)]], ...cost],
     ],
   }
 }
 
-function advisorRows(P: Palette, a: Advisor, share: number | null): [string, Span[]][] {
+function advisorRows(P: Palette, a: Advisor, share: number | null, fromAgents: Advisor | null): [string, Span[]][] {
   const rows: [string, Span[]][] = [['tokens', join(P, [[num('in', a.in, 'tokens', P.info), dim(' in')], [num('out', a.out, 'tokens', P.alt), dim(' out')]])]]
   if (a.usd !== null) {
     const part = share === null ? [] : [dim(' · '), num('share', share, 'int', P.alt, '', '%'), dim(' of session')]
     rows.push(['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? P.warn : P.ok), ...part]])
   }
+  if (fromAgents) rows.push(['agents', advisedBy(P, fromAgents, 'agents')])
   return rows
+}
+
+function advisedBy(P: Palette, a: Advisor, key: string): Span[] {
+  const calls = [num(`${key}-calls`, a.calls, 'int', P.text), dim(a.calls === 1 ? ' call' : ' calls')]
+  return a.usd === null ? calls : [...calls, dim(' · '), num(`${key}-usd`, a.usd, 'usd', P.text)]
+}
+
+function addAdvisor(a: Advisor | null, b: Advisor | null): Advisor | null {
+  if (!a || !b) return a ?? b
+  return { model: a.model || b.model, calls: a.calls + b.calls, in: a.in + b.in, out: a.out + b.out, usd: a.usd === null || b.usd === null ? null : a.usd + b.usd }
 }
 
 function spendClass(source: unknown): keyof Spend {
@@ -1359,16 +1606,17 @@ function spendClass(source: unknown): keyof Spend {
   return 'background'
 }
 
-function costParts(P: Palette, x: Spend, total: number, advisor: number): { label: string; usd: number; color: string }[] {
+function costParts(P: Palette, x: Spend, total: number, advisor: number, agentsAdvisor: number): { label: string; usd: number; color: string }[] {
   if (x.main + x.agents + x.background === 0) return []
   const earlier = Math.max(0, total - x.main - x.agents - x.background)
   const advisorUsd = Math.min(Math.max(0, advisor), x.main + earlier)
   const advisorFromMain = Math.min(x.main, advisorUsd)
   const advisorFromEarlier = advisorUsd - advisorFromMain
+  const advisorFromAgents = Math.min(Math.max(0, agentsAdvisor), x.agents)
   return [
     { label: 'main', usd: x.main - advisorFromMain, color: P.accent },
-    { label: 'advisor', usd: advisorUsd, color: P.alt },
-    { label: 'agents', usd: x.agents, color: P.info },
+    { label: 'advisor', usd: advisorUsd + advisorFromAgents, color: P.alt },
+    { label: 'agents', usd: x.agents - advisorFromAgents, color: P.info },
     { label: 'background', usd: x.background, color: P.cool },
     { label: 'earlier', usd: earlier - advisorFromEarlier, color: P.muted },
   ].filter(part => part.usd >= 0.00005)
@@ -1420,25 +1668,20 @@ async function refreshPlace($: $) {
 
 async function checkThresholds($: $, r: Reading, limits: { context: number; rate: number }, sounds: boolean) {
   const was = await read($, alerted)
-  const next = { ...was }
+  const next: Alerted = { context: was.context, rate: { ...(was.rate && typeof was.rate === 'object' ? was.rate : {}) } }
   const pct = Math.round(r.percent ?? 0)
   if (pct < limits.context) next.context = false
   else if (limits.context > 0 && !was.context) {
     next.context = true
     void notify($, 'context_high', sounds)
   }
-  const five = r.rate.find(w => w.kind === 'five_hour')
-  const seven = r.rate.find(w => w.kind === 'seven_day')
-  const window = seven && (!five || Math.trunc(seven.percentUsed) > Math.trunc(five.percentUsed)) ? seven : five
-  if (window && window.resetsAt !== was.resetsAt) {
-    next.rate = false
-    next.resetsAt = window.resetsAt
+  let crossed = false
+  if (limits.rate > 0) for (const w of r.rate) {
+    if (Math.trunc(w.percentUsed) < limits.rate || next.rate[w.kind] === w.resetsAt) continue
+    next.rate[w.kind] = w.resetsAt
+    crossed = true
   }
-  const used = window ? Math.trunc(window.percentUsed) : 0
-  if (window && limits.rate > 0 && used >= limits.rate && !next.rate) {
-    next.rate = true
-    void notify($, 'rate_limit', sounds)
-  }
+  if (crossed) void notify($, 'rate_limit', sounds)
   if (JSON.stringify(next) !== JSON.stringify(was)) await update($, alerted, () => next)
 }
 
@@ -1504,30 +1747,63 @@ async function transcriptPath($: $): Promise<string | null> {
   return null
 }
 
-async function refreshAgents($: $) {
-  const [list, t] = await Promise.all([$.agent.list(), $.clock.now()])
-  await update($, agents, prev =>
-    list.map((a): Agent => {
-      const old = prev.find(p => p.id === a.id)
-      return {
-        id: a.id,
-        description: a.description,
-        type: a.type,
-        status: a.status,
-        model: old?.model ?? null,
-        effort: old?.effort ?? null,
-        startedAt: old?.startedAt ?? t,
-        doneAt: ENDED.has(a.status) ? (old?.doneAt ?? t) : null,
-        context: old?.context ?? 0,
-        in: old?.in ?? 0,
-        out: old?.out ?? 0,
-        cacheRead: old?.cacheRead ?? 0,
-        cacheWrite: old?.cacheWrite ?? 0,
-        calls: old?.calls ?? 0,
-        usd: old?.usd ?? 0,
-      }
-    }),
-  )
+const gone = new Set<string>()
+
+// Claude Code drops a finished agent's task some seconds after it ends, raising
+// nothing: the panel keeps it until it has been finished a minute.
+let syncing: Promise<void> = Promise.resolve()
+
+// One at a time: a list fetched before another call's write must not land after it.
+function refreshAgents($: $): Promise<void> {
+  const run = syncing.then(() => syncAgents($))
+  syncing = run.catch(() => undefined)
+  return run
+}
+
+async function syncAgents($: $): Promise<void> {
+  const [list, t, prev] = await Promise.all([$.agent.list(), $.clock.now(), read($, agents)])
+  for (const a of list) {
+    if (ENDED.has(a.status)) halting.delete(a.id)
+    else if (gone.delete(a.id) || leaving.delete(a.id)) await move($, `drop-${a.id}`, 1)
+  }
+  const merge = (was: Agent[]): Agent[] => [
+    ...list
+      .filter(a => !gone.has(a.id))
+      .map((a): Agent => {
+        const old = was.find(p => p.id === a.id)
+        return {
+          id: a.id,
+          description: a.description,
+          type: a.type,
+          status: a.status,
+          model: old?.model ?? null,
+          effort: old?.effort ?? null,
+          startedAt: old?.startedAt ?? t,
+          doneAt: ENDED.has(a.status) ? (old?.doneAt ?? t) : null,
+          context: old?.context ?? 0,
+          in: old?.in ?? 0,
+          out: old?.out ?? 0,
+          cacheRead: old?.cacheRead ?? 0,
+          cacheWrite: old?.cacheWrite ?? 0,
+          calls: old?.calls ?? 0,
+          usd: old?.usd ?? 0,
+          cacheAt: old?.cacheAt ?? null,
+          cacheTtlMs: old?.cacheTtlMs ?? FIVE_MINUTES,
+        }
+      }),
+    ...was.filter(p => !gone.has(p.id) && !list.some(a => a.id === p.id)).map(p => (p.doneAt === null ? { ...p, status: 'completed', doneAt: t } : p)),
+  ]
+  const next = merge(prev)
+  const expired = next.filter(a => a.doneAt !== null && t - a.doneAt >= LINGER_MS).map(a => a.id)
+  const isSame = next.length === prev.length && next.every(a => prev.some(p => p.id === a.id && p.status === a.status && p.doneAt === a.doneAt))
+  const held = isSame ? prev : await update($, agents, merge)
+  for (const id of expired) await dropAgent($, id)
+  const isStaying = (id: string) => !gone.has(id) && !leaving.has(id)
+  if (list.some(a => isStaying(a.id)) || held.some(a => isStaying(a.id))) agentWatch ??= $.clock.every(AGENT_POLL_MS, () => void refreshAgents($).catch(() => undefined))
+  else {
+    agentWatch?.cancel()
+    agentWatch = null
+  }
 }
 
 type Iteration = {
@@ -1543,6 +1819,8 @@ type Iteration = {
 
 let isAdvisorPending = false
 let ticker: { cancel: () => void } | null = null
+let agentWatch: { cancel: () => void } | null = null
+const AGENT_POLL_MS = 5000
 let seededFor: string | null = null
 let isAwaitingConversation = false
 let seedTries = 0
@@ -1551,7 +1829,7 @@ let isPanelOffered = false
 let turnStartedAt: number | null = null
 
 const unmatchedSteps = new Map<string, string[]>()
-const unmatchedCosts = new Map<string, number[]>()
+const unmatchedCosts = new Map<string, { usd: number; ttl: (was: number | undefined) => number }[]>()
 
 function usageKey(input: number, output: number, cacheRead: number, cacheWrite: number): string {
   return `${input}|${output}|${cacheRead}|${cacheWrite}`
@@ -1599,6 +1877,7 @@ async function seedSession($: $): Promise<void> {
     $.session.id(),
   ])
   seededFor = id
+  captured.clear()
   const setEffort = await settingsEffort($, model)
   await update($, meta, m => ({
     model: m?.model ?? model,
@@ -1611,6 +1890,7 @@ async function seedSession($: $): Promise<void> {
   await update($, reading, () => ({ ...toReading(usage), ...(carried.length > 0 && { rate: carried }) }))
   await update($, menu, () => null)
   await update($, motion, () => ({}))
+  if (leaving.size > 0) await forget($, [...leaving])
   await update($, turns, () => n)
   await update($, now, () => t)
   await refreshPlace($)
@@ -1639,6 +1919,35 @@ async function refreshAdvisor($: $): Promise<void> {
   const n = ++advisorReads
   const scan = await readTranscript($)
   if (scan && n === advisorReads) await update($, advisor, () => scan.advisor)
+}
+
+const advisedAgents = new Set<string>()
+const agentAdvisorReads = new Map<string, number>()
+
+async function refreshAgentAdvisor($: $, id: string): Promise<void> {
+  const n = (agentAdvisorReads.get(id) ?? 0) + 1
+  agentAdvisorReads.set(id, n)
+  const main = await transcriptPath($)
+  const path = main && /^[\w-]+$/.test(id) ? `${main.replace(/\.jsonl$/, '')}/subagents/agent-${id}.jsonl` : null
+  if (!path || !(await $.fs.exists(path))) return
+  const found = await readAdvisor($, path)
+  if (found && agentAdvisorReads.get(id) === n) await update($, agentAdvisor, x => ({ ...x, [id]: found }))
+}
+
+async function readAdvisor($: $, path: string): Promise<Advisor | null> {
+  const byMessage = new Map<string, Iteration[]>()
+  for await (const line of transcriptLines($, path)) {
+    if (!line.includes('"advisor_message"')) continue
+    try {
+      const row = JSON.parse(line)
+      const u = row?.message?.usage
+      if (row.type !== 'assistant' || !Array.isArray(u?.iterations)) continue
+      const calls: Iteration[] = u.iterations.filter((it: Iteration) => it.type === 'advisor_message')
+      byMessage.set(row.message.id ?? line, calls.map(it => ({ ...it, inference_geo: u.inference_geo })))
+    } catch {
+    }
+  }
+  return sumAdvisor([...byMessage.values()].flat())
 }
 
 async function measureTranscript($: $): Promise<void> {
@@ -1737,17 +2046,18 @@ const SAVE_PS =
   "Get-ChildItem -LiteralPath (Split-Path $env:STATUSBOX_SAVE) -Filter 'statusbox-*.png' | Where-Object LastWriteTime -lt (Get-Date).AddDays(-1) | Remove-Item -ErrorAction SilentlyContinue;" +
   '$img.Save($env:STATUSBOX_SAVE, [System.Drawing.Imaging.ImageFormat]::Png)'
 
-const captured = new Set<number>()
+const captured = new Map<number, Promise<Preview | null>>()
+let inPrompt = new Set<number>()
 
-async function syncPreviews($: $): Promise<void> {
-  const { text } = await $.prompt.read()
+// Only a paste reads the clipboard; a capture that lands after its placeholder went shows nothing.
+async function syncPreviews($: $, text: string, isPaste: boolean): Promise<void> {
   const ids = new Set([...text.matchAll(/\[Image #(\d+)\]/g)].map(m => Number(m[1])))
+  inPrompt = ids
   if ((await read($, previews)).some(p => !ids.has(p.id))) await update($, previews, list => list.filter(p => ids.has(p.id)))
   for (const id of ids) {
-    if (captured.has(id)) continue
-    captured.add(id)
-    const preview = await captureClipboard($, id).catch(() => null)
-    if (preview) await update($, previews, list => (list.some(p => p.id === id) ? list : [...list, preview]))
+    if (isPaste && !captured.has(id)) captured.set(id, captureClipboard($, id).catch(() => null))
+    const preview = await captured.get(id)
+    if (preview && inPrompt.has(id)) await update($, previews, list => (list.some(p => p.id === id) ? list : [...list, preview]))
   }
 }
 

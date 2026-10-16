@@ -78,10 +78,10 @@ In fullscreen mode (`"tui": "fullscreen"`), a panel docks beside the transcript.
 Click a section's name to fold it, smoothly, down to one line that sums it up (`▸ USAGE ── 5-hour 10% · 7-day 5%`), and again to open it. Folded sections stay folded in later sessions. Your Claude Code version sits at the bottom, with a link to the changelog.
 
 - **Usage:** the 5-hour and 7-day rate limits, each with a bar, a tick where a steady pace would put you by now, and the time to its reset.
-- **Session:** messages, session length and how long the latest turn took to its first output and in all (counting up while Claude works), the size of its transcript on disk, then the session's cost: its total, and a bar split by who asked (the main conversation, the advisor, subagents, background work such as titles and compaction, and `earlier`, what the session cost before the plugin saw it), with each part's dollars and share below.
+- **Session:** messages, session length and how long the latest turn took to its first output and in all (counting up while Claude works), the size of its transcript on disk, in auto mode how many tool calls its classifier allowed and blocked, then the session's cost: its total, and a bar split by who asked (the main conversation, the advisor, subagents, background work such as titles and compaction, and `earlier`, what the session cost before the plugin saw it), with each part's dollars and share below.
 - **Cache:** once Claude has answered, whether the prompt cache still holds the conversation. **Warm**, the next message reads it back for a small part of the input price, and a countdown shows how long it stays warm without a message (5 minutes or an hour, whichever Claude Code asked for). **Cold**, it writes the whole context to the cache again at more than the full input price. The card shows what the next message pays for that and what it would pay the other way. Switching model or compacting makes it cold.
-- **Advisor:** once the advisor tool has been used, a card with its model, calls, tokens and cost, and a bar for its share of the session's cost.
-- **Agents:** a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, with Claude's animation while it works.
+- **Advisor:** once the advisor tool has been used, a card with its model, calls, tokens and cost, and a bar for its share of the session's cost. Advice your agents asked for counts too, with its own `agents` row, and each agent's card shows the advice it asked for.
+- **Agents:** a card per subagent in this session: what it was asked, its model and effort, tokens, cost and time, and its prompt cache's countdown, with Claude's animation while it works. **■ Stop** on a running agent's card stops it once you press it again (**■ Confirm**), a red line running round the card as it stops, and **✕ dismiss** slides a finished one out of the panel; finished agents leave the same way on their own a minute after they end, and come back if Claude resumes them. A finished agent's cache countdown is dimmed and reads "if resumed": it is how long a resume would still find its prompt cached. Click an agent's name to watch its transcript in the main view, and **‹ main conversation** at the top of the panel to go back. With statusbox on, Claude Code's own agent rows under the prompt are hidden, since the panel shows them; a `subagentStatusLine` of your own in `settings.json` takes precedence.
 
 **Keys:** `ctrl+x ←` and `ctrl+x →` widen and narrow it, `ctrl+x x` closes it. Once you click a header, Return folds and opens it. Once closed it stays closed until you open it again.
 
@@ -97,7 +97,7 @@ A sound for the moments you'd otherwise miss.
 | Finished | Claude finishes responding. Not while a subagent it's waiting on is still running. |
 | Compaction start / done | Context compaction begins or ends |
 | Context high | Context usage reaches 70%, once until it drops below again |
-| Rate limit | 5-hour or 7-day usage reaches 80%, once per window |
+| Rate limit | 5-hour or 7-day usage reaches 80%, once for each until it resets |
 
 | Platform | Sounds |
 |----------|--------|
@@ -161,7 +161,7 @@ On Windows, or in a terminal that ignores it, set the background yourself. In VS
 
 statusbox is a Claude Code plugin made of function hooks: the box, the panel and the alerts react to the engine's own events (each request, each turn, compaction, permission prompts) instead of running a program on every refresh. The box draws above the prompt through `ui.render`, the panel is a docked `Pane`, and the animations are small client modules the terminal runs locally.
 
-It reads only what Claude Code already writes: the session's transcript, once at start and again after a turn that used the advisor. After each turn it runs `git` for the repo row. It makes no network calls, and the cost figures are Claude Code's own.
+It reads only what Claude Code already writes: the session's transcript, once at start and again after a turn that used the advisor, and an agent's transcript after it used the advisor. After each turn it runs `git` for the repo row. It makes no network calls, and the cost figures are Claude Code's own.
 
 This repository was `claude-statusline`, a Rust binary; that version is at [v1.0.0-rc.2](https://github.com/axlaser/statusbox/tree/v1.0.0-rc.2).
 

@@ -66,9 +66,13 @@ export type Agent = {
   cacheWrite: number
   calls: number
   usd: number
+  cacheAt: number | null
+  cacheTtlMs: number
 }
 
-export type Alerted = { context: boolean; rate: boolean; resetsAt: string | null }
+export type Alerted = { context: boolean; rate: Record<string, string | null> }
+
+export type Verdicts = { allowed: number; blocked: number }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -85,9 +89,11 @@ declare module 'claude-code' {
       totals: Tokens
       last: Tokens
       advisor: Advisor | null
+      agentAdvisor: Record<string, Advisor>
       override: string | null
       turns: number
       agents: Agent[]
+      stopArmed: string | null
       spend: Spend
       speed: Speed
       cache: Cache | null
@@ -99,6 +105,7 @@ declare module 'claude-code' {
       now: number
       panelClosed: boolean
       alerted: Alerted
+      verdicts: Verdicts
     }
   }
 }
