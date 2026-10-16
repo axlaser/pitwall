@@ -1,4 +1,4 @@
-import type { AgentInfo, AgentStatus, ConfigValue, On, PromptChangeInput, PromptEditInput } from 'claude-code'
+import type { AgentInfo, AgentStatus, ConfigValue, On, PromptChangeInput, PromptEditInput, SessionUsage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { shortPath } from '../hooks/history'
@@ -26,12 +26,12 @@ const engine = (on: On, { opened, turns = () => 3, onClose }: { opened?: (true |
 
 const NO_GIT = { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
 
-const mockSession = (on: On, o: { model?: () => string; settings?: () => Record<string, unknown>; id?: () => string; os?: string; agents?: () => AgentInfo[] } = {}) => {
+const mockSession = (on: On, o: { model?: () => string; settings?: () => Record<string, unknown>; id?: () => string; os?: string; agents?: () => AgentInfo[]; usage?: () => SessionUsage } = {}) => {
   mock.env(on, o.os ? { HOME: '/home/me', OS: o.os } : { HOME: '/home/me' })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.model', () => ({ value: o.model?.() ?? 'claude-sonnet-6' }))
   on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
+  on('session.usage', () => ({ value: o.usage?.() ?? { startedAt: 0, context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], cost: { usd: 0 } } }))
   on('session.cwd', () => ({ value: '/home/me/repo' }))
   on('session.repo', () => ({ value: null }))
   on('session.root', () => ({ value: '/home/me/repo' }))
@@ -519,8 +519,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const pillText = async (key: string) => (await ui.find({ type: 'Text', in: key }))?.text
     const labels = await Promise.all(['opus', 'sonnet', 'fable', 'haiku'].map(alias => pillText(`pick-model-${alias}`)))
     expect(labels).toEqual([' Opus 5.5 ', ' Sonnet 6 ', ' Fable ', ' Haiku '])
-    const tints = await Promise.all(['opus', 'sonnet', 'fable', 'haiku', 'default'].map(async alias => (await ui.find({ type: 'Text', in: `pick-model-${alias}` }))?.props.color))
-    expect(tints).toEqual(['#d77757', '#5f9cf5', '#b48cf2', '#5fbf8f', '#a9afc2'])
+    const tints = await Promise.all(['opus', 'sonnet', 'fable', 'haiku'].map(async alias => (await ui.find({ type: 'Text', in: `pick-model-${alias}` }))?.props.color))
+    expect(tints).toEqual(['#d77757', '#5f9cf5', '#b48cf2', '#5fbf8f'])
     const [swept, padded] = [new Set<unknown>(), new Set<unknown>()]
     for (let t = 0; t < 1500; t += 30) {
       await ui.advance(30)
@@ -528,7 +528,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       for (const text of await ui.findAll({ type: 'Text', in: 'pick-model-haiku' })) if (text.text === ' ' && text.props.color) padded.add(text.props.color)
     }
     expect([swept.size, swept.has('#5f9cf5'), padded.size]).toEqual([4, true, 4])
-    expect(await Promise.all(['opus[1m]', 'opusplan', 'best'].map(alias => isOffered(`pick-model-${alias}`)))).toEqual([false, false, false])
+    expect(await Promise.all(['default', 'opus[1m]', 'opusplan', 'best'].map(alias => isOffered(`pick-model-${alias}`)))).toEqual([false, false, false, false])
     expect(await isLit('pick-model-opus')).toBe(true)
     expect(await widths()).toEqual(width)
     const textOf = (node: unknown): string => (typeof node === 'string' ? node : ((node as { children?: unknown[] }).children ?? []).map(textOf).join(''))
@@ -556,9 +556,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const pillLine = unrolled.lines[wireRow + 2]
     const start = cellsTo(unrolled.lines[wireRow], 'wire')
     const room = (await textIn('wire')).length
-    const before = cellsTo(pillLine, 'pick-model-default') - start
+    const before = cellsTo(pillLine, 'pick-model-haiku') - start
     const after = start + room - (cellsTo(pillLine, 'pick-model-fable') + ' Fable '.length)
     expect([0, 1]).toContain(after - before)
+    const order = ['haiku', 'sonnet', 'opus', 'fable'].map(alias => cellsTo(pillLine, `pick-model-${alias}`))
+    expect([order.every(at => at >= 0), order]).toEqual([true, [...order].sort((a, b) => a - b)])
     await ui.press({ key: 'pick-model-sonnet' })
     await ui.advance(16)
     expect([sets, (await textIn('wire')).includes('◂'), await drawnIn('wire-arrow')]).toEqual([[], true, ''])
@@ -570,6 +572,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await wireAt()).corners).toEqual([fromChip, toSonnet, toSonnet])
     await ui.press({ key: 'pick-model-opus-lit' })
     expect(await isOffered('confirm')).toBe(false)
+    const heads = async () => (await textIn('wire')).filter(cell => cell === '▸' || cell === '◂')
+    const backing = [await heads(), await ui.advance(160).then(heads)]
+    expect(backing).toEqual([['◂'], ['◂']])
     await ui.press({ key: 'pick-model-sonnet' })
     await ui.press({ key: 'confirm' })
     expect(sets).toEqual([['model', 'sonnet']])
@@ -1369,25 +1374,25 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'model' })
     await clock.advance(1000)
     await ui.advance(1000)
-    const row = async () => (await lines()).find(line => cellsTo(line, 'pick-model-default') >= 0)
-    const unmoved = cellsTo(await row(), 'pick-model-default')
+    const row = async () => (await lines()).find(line => cellsTo(line, 'pick-model-opus') >= 0)
+    const unmoved = cellsTo(await row(), 'pick-model-opus')
 
     await ui.press({ key: 'pick-model-sonnet' })
     expect(await ui.find({ key: 'confirm' })).toBeUndefined()
     await clock.advance(BEAT)
-    expect(cellsTo(await row(), 'pick-model-default')).toBe(unmoved - 1)
+    expect(cellsTo(await row(), 'pick-model-opus')).toBe(unmoved - 1)
     await clock.advance(976)
     const moved = await row()
     expect(cellsTo(moved, 'confirm')).toBe(cellsTo(moved, 'pick-model-fable') + ' Fable '.length + 2)
     expect(await widths()).toEqual(width)
     await ui.press({ key: 'confirm' })
-    expect([sets, cellsTo(await row(), 'pick-model-default')]).toEqual([['sonnet'], cellsTo(moved, 'pick-model-default')])
+    expect([sets, cellsTo(await row(), 'pick-model-opus')]).toEqual([['sonnet'], cellsTo(moved, 'pick-model-opus')])
     await clock.advance(1000)
     expect(await row()).toBeUndefined()
 
     await ui.press({ key: 'model' })
     await clock.advance(1000)
-    expect([cellsTo(await row(), 'pick-model-default'), await ui.find({ key: 'confirm' })]).toEqual([unmoved, undefined])
+    expect([cellsTo(await row(), 'pick-model-opus'), await ui.find({ key: 'confirm' })]).toEqual([unmoved, undefined])
   })
 
   test(`${surface}: a session started before its conversation arrives seeds it once it does`, async ($, on) => {
@@ -1826,6 +1831,172 @@ for (const surface of ['terminal', 'desktop'] as const) {
     }
     expect(await Promise.all(Object.keys(want).map(figure))).toEqual(Object.entries(want).map(([key, text]) => `${key} ${text}`))
     expect(await pane.find({ type: 'Text', text: '✶ Fable 5.1' })).toBeDefined()
+  })
+
+  test(`${surface}: a narrow panel keeps every row of every card on one line inside it`, async ($, on) => {
+    engine(on)
+    const at = Date.parse('2026-10-14T12:00:00Z')
+    const clock = mock.clock(on, { now: at })
+    let status: AgentStatus = 'running'
+    const resets = (s: number) => new Date(at + s * 1000).toISOString()
+    const rateLimits = [
+      { kind: 'five_hour' as const, percentUsed: 42, resetsAt: resets(3 * 3600 + 1240) },
+      { kind: 'seven_day' as const, percentUsed: 18, resetsAt: resets(5 * 86_400 + 7200) },
+    ]
+    mockSession(on, {
+      model: () => 'claude-opus-5-5',
+      agents: () => [{ id: 'a1', description: 'Find every caller of the frobnicator', type: 'general-purpose', status }],
+      usage: () => ({ startedAt: at - 3_600_000, context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits, cost: { usd: 12.3456 } }),
+    })
+    on('process.run', () => NO_GIT)
+    const main = '/home/me/.claude/projects/-home-me-repo/abc.jsonl'
+    const advice = { type: 'advisor_message', model: 'claude-fable-5-1', input_tokens: 100_000, output_tokens: 10_000 }
+    const transcript = [
+      JSON.stringify({ type: 'user', message: { content: 'hi' } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: { input_tokens: 2, output_tokens: 3, iterations: [{ type: 'message' }, advice] } } }),
+    ].join('\n')
+    const isMain = (path: string) => path.replace(/\\/g, '/').endsWith(main)
+    on('fs.exists', ($, e) => ({ value: isMain(e.path) }))
+    on('fs.list', () => ({ value: [] }))
+    on('fs.stat', ($, e) => ({ value: { kind: 'file', size: isMain(e.path) ? transcript.length : 0, mtimeMs: 0, isLink: false } }))
+    on('fs.read', ($, e) => ({ value: isMain(e.path) ? transcript : '' }))
+    const usage = { model: 'claude-opus-5-5', input_tokens: 1200, output_tokens: 3400, cache_read_input_tokens: 81_000, cache_creation_input_tokens: 2000 }
+    on('turn.step', async function* ($, e) {
+      const serverToolUses = [{ id: 'adv1', name: 'advisor', input: {}, startedAt: 0, endedAt: 1 }]
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], serverToolUses, stopReason: 'end_turn' as const, usage }
+    })
+    await $.session.start({ cwd: '/home/me/repo', surface, isInteractive: true })
+    await $.session.measure({ context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits, changed: ['rateLimits'] })
+    for (const agentId of ['a1', undefined]) {
+      await $.turn.start({ text: 'go', turnId: `t-${agentId}`, ...(agentId && { agentId }) })
+      for await (const _ of $.turn.step({ turnId: `t-${agentId}`, index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1, ...(agentId && { agentId }) })) {
+      }
+    }
+    const tokens = { input_tokens: 1200, output_tokens: 3400, cache_read_tokens: 81_000, cache_creation_tokens: 2000, duration_ms: 3000 }
+    await $.telemetry.log(apiRequest({ query_source: 'agent:builtin:general-purpose', cost_usd: 1.234, ...tokens }))
+    await $.telemetry.log(apiRequest({ query_source: 'repl_main_thread', cost_usd: 9.87, model: 'claude-opus-5-5', cache_creation_5m_tokens: 2000, ...tokens }))
+    await $.telemetry.log(apiRequest({ query_source: 'compact', cost_usd: 0.4567 }))
+    for (const verdict of ['allow', 'block']) await $.telemetry.log({ to: 'collector', event: 'tool_decision', attributes: { classifier_verdict: verdict }, loggedAt: '2026-10-14T00:00:00.000Z' })
+    status = 'completed'
+    await clock.advance(6000)
+
+    type Node = { type?: string; props?: { width?: number; paddingX?: number; borderStyle?: string; marginLeft?: number; flexDirection?: string; wrap?: string }; children?: unknown[] }
+    const need = (node: unknown): number => {
+      if (typeof node === 'string') return cellsOf(node)
+      const el = node as Node
+      if (el.type === 'Client') return el.props?.width ?? 0
+      if (el.type === 'Text' && el.props?.wrap === 'truncate-end') return 1
+      const kids = (el.children ?? []).map(need)
+      const own = el.props?.flexDirection === 'column' ? Math.max(0, ...kids) : kids.reduce((sum, cells) => sum + cells, 0)
+      return Math.max(own, el.props?.width ?? 0) + (el.props?.paddingX ?? 0) * 2 + (el.props?.borderStyle ? 2 : 0) + (el.props?.marginLeft ?? 0)
+    }
+    const isStacked = (node: unknown): boolean => typeof node !== 'string' && ((node as Node).props?.flexDirection === 'column' || ((node as Node).type !== 'Client' && ((node as Node).children ?? []).some(isStacked)))
+    const over = (node: unknown, room: number): string[] => {
+      const el = node as Node
+      if (typeof node === 'string' || el.type === 'Client' || el.type === 'Text') return []
+      const width = el.props?.width ?? room
+      const inside = width - (el.props?.paddingX ?? 0) * 2 - (el.props?.borderStyle ? 2 : 0)
+      if (el.type === 'Box' && el.props?.flexDirection !== 'column' && !(el.children ?? []).some(isStacked)) return need(el) > width ? [`${textOf(el)}: ${need(el)} > ${width}`] : []
+      return (el.children ?? []).flatMap(child => over(child, inside))
+    }
+    const textOf = (node: unknown): string => (typeof node === 'string' ? node : ((node as Node).children ?? []).map(textOf).join(''))
+    const seen: unknown[] = []
+    for (const bodyColumns of [40, 28, 22, 18]) {
+      const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: { ...PANE, bodyColumns, scroll: { offset: 0, bodyRows: 80 } } })
+      const bar = (await pane.find({ key: 'cache-left-a1' }))?.props.width
+      seen.push([bodyColumns, over(await pane.drawn(), bodyColumns), (await pane.find({ type: 'Text', text: ' if resumed' })) !== undefined, bar === undefined || (bar as number) > 0])
+      await pane.unmount()
+    }
+    expect(seen).toEqual([
+      [40, [], true, true],
+      [28, [], false, true],
+      [22, [], false, true],
+      [18, [], false, true],
+    ])
+  })
+
+  test(`${surface}: a narrow box keeps every line inside the column, and the wire only reaches a pick on the first row of choices`, async ($, on) => {
+    const opened: (true | undefined)[] = []
+    engine(on, { opened })
+    const clock = mock.clock(on)
+    const repo = '/home/me/Desktop/repos/personal/statusbox'
+    mock.env(on, { HOME: '/home/me' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.model', () => ({ value: 'claude-opus-5-5' }))
+    on('session.version', () => ({ value: { version: '2.1.300', base: '2.1.300' } }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits: [], cost: { usd: 0 } } }))
+    on('session.cwd', () => ({ value: repo }))
+    on('session.root', () => ({ value: repo }))
+    on('session.repo', () => ({ value: { root: repo, remote: 'git@github.com:me/statusbox.git', internal: false, name: null } }))
+    on('session.id', () => ({ value: 'abc' }))
+    on('settings.read', () => ({ value: { effortLevel: 'xhigh' } }))
+    on('agent.list', () => ({ value: [] }))
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }))
+    const model = { key: 'model', label: 'Model', kind: 'choice' as const, value: 'opus', isLocked: false, options: ['default', 'sonnet', 'opus', 'haiku', 'fable'], provider: { plugin: 'engine', tier: 'core' as const } }
+    on('config.list', () => ({ value: [model] }))
+    on('process.run', ($, e) => ({
+      value: {
+        exitCode: 0,
+        stdout: e.argv.includes('status') ? '# branch.oid abc1234def\n# branch.head dev-claude-plugin\n# branch.ab +2 -1\n? new.txt\n' : ' 3 files changed, 125 insertions(+), 41 deletions(-)\n',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }))
+    on('turn.step', async function* ($, e) {
+      const usage = { model: e.model, input_tokens: 12_345, output_tokens: 3_456, cache_read_input_tokens: 812_000, cache_creation_input_tokens: 23_400 }
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage }
+    })
+    const step = async (model: string) => {
+      for await (const _ of $.turn.step({ turnId: 't1', index: 0, model, effort: 'xhigh', messageCount: 1 })) {
+      }
+    }
+    await $.session.start({ cwd: repo, surface, isInteractive: true })
+    await $.session.measure({ context: { tokens: 84_000, window: 200_000, percent: 42 }, rateLimits: [], changed: ['context'] })
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await step('claude-opus-5-5')
+    await clock.advance(1000)
+
+    const shown: unknown[] = []
+    for (const bodyColumns of [140, 93, 63, 52, 44]) {
+      const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true, bodyColumns } })
+      const lines = ((await frameOf(ui)) as { children: unknown[] }).children.filter(Boolean)
+      const has = async (key: string) => (await ui.find({ key })) !== undefined
+      const full = [(await ui.find({ key: 'bar' }))?.props.width, await has('panel'), await has('n-in-delta')]
+      shown.push([bodyColumns, Math.max(...lines.map(cells)) + 2 <= bodyColumns, await has('chip-model'), await has('chip-effort'), await has('n-pct'), ...(bodyColumns === 140 ? full : [])])
+      await ui.unmount()
+    }
+    expect(shown).toEqual([140, 93, 63, 52, 44].map(bodyColumns => [bodyColumns, true, true, true, true, ...(bodyColumns === 140 ? [30, true, true] : [])]))
+
+    const bare = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, bodyColumns: 52 } })
+    expect(await bare.find({ key: 'panel' })).toBeUndefined()
+    await bare.press({ key: 'chevron-panel' })
+    expect(opened).toEqual([true])
+    await bare.unmount()
+
+    const ui = await $.ui.mount({ plugin: 'statusbox', surface, component: 'AbovePrompt', props: { ...BAND, isWorking: true, bodyColumns: 44 } })
+    await ui.press({ key: 'model' })
+    await clock.advance(1000)
+    await ui.advance(1000)
+    const linesOf = async () => ((await frameOf(ui)) as { children: unknown[] }).children.filter(Boolean)
+    const middleOf = async (alias: string): Promise<[number, number]> => {
+      const lines = await linesOf()
+      const at = lines.findIndex(line => cellsTo(line, `pick-model-${alias}`) >= 0)
+      const text = (await ui.find({ type: 'Text', in: `pick-model-${alias}` }))?.text ?? ''
+      return [at, cellsTo(lines[at], `pick-model-${alias}`) + Math.floor([...text].length / 2)]
+    }
+    const arrow = async () => {
+      const line = (await linesOf()).find(line => cellsTo(line, 'wire-arrow') >= 0)
+      return line === undefined ? -1 : cellsTo(line, 'wire-arrow') + [...((await ui.find({ type: 'Text', in: 'wire-arrow' }))?.text ?? '')].indexOf('▾')
+    }
+    const [opusRow, opusAt] = await middleOf('opus')
+    const [fableRow] = await middleOf('fable')
+    expect([Math.max(...(await linesOf()).map(cells)) + 2 <= 44, fableRow > opusRow, await arrow()]).toEqual([true, true, opusAt])
+
+    await step('claude-fable-5-1')
+    await ui.advance(1000)
+    expect([(await middleOf('fable'))[0] > (await middleOf('opus'))[0], await ui.find({ key: 'wire' }), await arrow()]).toEqual([true, undefined, -1])
   })
 
   test(`${surface}: the panel opens by itself in fullscreen only`, async ($, on) => {

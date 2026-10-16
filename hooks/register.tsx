@@ -59,7 +59,8 @@ const MENU_TURN = ['▾', '▸', '▴']
 const CHEVRON_CELLS = 2
 const PILL_LEAD = { effort: ' · ', model: ' ' }
 const PILL_TAIL = ' '
-const NOT_OFFERED = ['opusplan', 'best']
+const NOT_OFFERED = ['default', 'opusplan', 'best']
+const FAMILY_ORDER = ['haiku', 'sonnet', 'opus', 'fable']
 const FIRST_OUTPUT_FAST_MS = 10_000
 const FIRST_OUTPUT_SLOW_MS = 30_000
 const US_INFERENCE_MULTIPLIER = 1.1
@@ -92,12 +93,18 @@ const HOUR = 3_600_000
 const LABEL_W = 7
 const CACHE_LABEL = 'cache '
 const TITLE_TAIL = 10
+const TITLE_ARROW = 3
 const STOPPING = 'stopping…'
 const STATE_CELLS = Math.max(WORKING_CELLS, STOPPING.length)
 const IF_RESUMED = ' if resumed'
 const LEFT_CELLS = 7
+const MIN_BAR = 4
+const MIN_TYPE = 6
+const BACK = '‹ main conversation'
 const BAR_WIDTH = 30
 const MIN_INNER = 30
+const MIN_BOX_BAR = 10
+const BRANCH_CELLS = 20
 
 export const register: Register = (on, options) => {
   const sounds = options.sounds !== false
@@ -451,21 +458,23 @@ export const register: Register = (on, options) => {
     ])
     const m = session && { ...session, effort: chosenEffort ?? session.effort }
     const pct = r?.percent ?? 0
+    const avail = e.props.bodyColumns - 4
+    const room = avail - widthOf(innerOf(P, { section: 0, label: '', content: [] }))
     const rows: Row[] = [
-      { section: 0, label: p?.git ? 'repo' : 'project', content: pathRow(P, p) },
-      { section: 1, label: 'model', content: modelRow(P, r, m, e.props.isWorking) },
-      { section: 1, label: 'tokens', content: tokensRow(P, tot, delta) },
+      { section: 0, label: p?.git ? 'repo' : 'project', content: pathRow(P, p, room) },
+      { section: 1, label: 'model', content: modelRow(P, r, m, e.props.isWorking, room) },
+      { section: 1, label: 'tokens', content: tokensRow(P, tot, delta, room) },
     ]
     const inForce = open && (open.kind === 'effort' ? m?.effort : aliasOf(m?.model))
     if (open) {
       const made = moving['menu-room']?.openness ?? (open.pick === undefined ? 0 : 1)
-      const { rows: picker, give } = pickRows(P, open, inForce, m?.model, roomOf(P, rows), rows[1]?.content ?? [], made)
+      const { rows: picker, give } = pickRows(P, open, inForce, m?.model, roomOf(P, rows, avail), rows[1]?.content ?? [], made)
       foldRows.set('menu', picker.length)
       foldRows.set('menu-room', Math.max(1, give))
       const openness = moving.menu?.openness
       rows.splice(2, 0, ...(openness === undefined ? picker : picker.slice(0, Math.round(picker.length * openness))))
     }
-    const lines = frame(P, rows)
+    const lines = frame(P, rows, avail)
 
     const elements = $.ui.resolve(e)
     const { Box, Button, Client, Text } = elements
@@ -477,9 +486,11 @@ export const register: Register = (on, options) => {
     const chip = (span: Span, kind: 'panel' | 'model' | 'effort', isOpen: boolean, turn: string[], onPress: () => Promise<void>) => (
       <Box width={widthOf([span])} flexShrink={0}>
         {kind === 'panel' ? (
-          <Button plain key={kind} hover={{ scope: kind, inverse: true }} onPress={() => void onPress().catch(() => undefined)}>
-            {draw({ ...span, text: span.text.slice(0, -CHEVRON_CELLS) })}
-          </Button>
+          span.text.length > CHEVRON_CELLS && (
+            <Button plain key={kind} hover={{ scope: kind, inverse: true }} onPress={() => void onPress().catch(() => undefined)}>
+              {draw({ ...span, text: span.text.slice(0, -CHEVRON_CELLS) })}
+            </Button>
+          )
         ) : (
           <Client
             key={`chip-${kind}`}
@@ -542,7 +553,7 @@ export const register: Register = (on, options) => {
           key="bar"
           module="./bar.tsx"
           width={widthOf([span])}
-          props={{ percent: r?.percent ?? 0, isWorking: e.props.isWorking, width: BAR_WIDTH, ...barInk(P) }}
+          props={{ percent: r?.percent ?? 0, isWorking: e.props.isWorking, width: widthOf([span]), ...barInk(P) }}
         />
       ) : span.el === 'claude' ? (
         <Client key="claude" module="./claude.tsx" width={widthOf([span])} props={{ isWorking: e.props.isWorking, ...sparkInk(P) }} />
@@ -675,7 +686,7 @@ export const register: Register = (on, options) => {
       )
     const figures = (owner: string, value: Span[]) =>
       Client && value.some(span => span.count) ? (
-        <Box>
+        <Box flexShrink={0}>
           {value.map(span =>
             span.count ? <Client key={`n-${owner}-${span.count.key}`} module="./count.tsx" width={widthOf([span])} props={countProps({ ...span, count: span.count })} /> : draw(span),
           )}
@@ -683,26 +694,41 @@ export const register: Register = (on, options) => {
       ) : (
         <Text wrap="truncate-end">{value.map(draw)}</Text>
       )
-    const line = (owner: string, [label, value]: [string, Span[]]) => figures(owner, [dim(label.padEnd(8)), ...value])
-    const spread = (owner: string, [left, right]: [Span[], Span[]]) => (
+    const spread = (owner: string, [left, right]: Pair) => (
       <Box justifyContent="space-between">
         {figures(owner, left)}
-        {figures(owner, right)}
+        {right.length > 0 && (
+          <Box flexShrink={0} marginLeft={left.length > 0 ? 1 : 0}>
+            {figures(owner, right)}
+          </Box>
+        )}
       </Box>
     )
     const share = adv?.usd != null && r?.costUsd ? Math.min(100, Math.round((adv.usd / r.costUsd) * 100)) : null
     const meter = inner - 4
+    const line = (owner: string, [label, values]: [string, Span[][]]) => {
+      const labelled = [label.padEnd(8), `${label} `].flatMap(head => values.map((value): Pair => [[dim(head), ...value], []]))
+      return figures(owner, pick(meter, [...labelled, [values[values.length - 1] ?? [], []]])[0])
+    }
     const half = Math.floor((meter - 2) / 2)
-    const grid = (owner: string, pairs: [string | Span[], Span[]][]) => (
+    const fitsHalf = ([label, value]: [string | Span[], Span[]]) => widthOf(typeof label === 'string' ? [s(label)] : label) + 1 + widthOf(value) <= half
+    const grid = (owner: string, pairs: [string | Span[], Span[]][], width = half) => (
       <Box justifyContent="space-between">
         {pairs.map(([label, value]) => (
-          <Box width={half} justifyContent="space-between">
-            {typeof label === 'string' ? <Text dimColor>{label}</Text> : <Text>{label.map(draw)}</Text>}
+          <Box width={width} justifyContent="space-between">
+            {typeof label === 'string' ? (
+              <Text dimColor wrap="truncate-end">
+                {label}
+              </Text>
+            ) : (
+              <Text wrap="truncate-end">{label.map(draw)}</Text>
+            )}
             {figures(owner, value)}
           </Box>
         ))}
       </Box>
     )
+    const say = (long: string, short: string) => <Text dimColor wrap="truncate-end">{cellsOf(long) <= inner ? long : short}</Text>
     const flat = (percent: number, color: string, width = meter) => (
       <Text>
         <Text color={color}>{'━'.repeat(Math.round((Math.min(100, Math.max(0, percent)) / 100) * width))}</Text>
@@ -734,12 +760,13 @@ export const register: Register = (on, options) => {
       const usageLines = r.rate.flatMap((w, i) => {
         const f = rateFacts(P, w, t)
         const burn = Math.abs(f.burn) >= 1 ? [s(' '), num(`${w.kind}-burn`, Math.abs(f.burn), 'int', f.burn > 0 ? P.bad : P.ok, f.burn > 0 ? '⇡' : '⇣', '%')] : []
+        const name: Span[] = [{ text: f.name, bold: true }]
+        const pct = num(w.kind, f.pct, 'int', f.color, '', '%')
+        const mark: Span = { text: '┃', color: P.text, bold: true }
+        const resets = f.remaining === null ? '' : formatDuration(f.remaining)
         return [
           ...(i === 0 ? [] : [gap()]),
-          <Box justifyContent="space-between">
-            <Text bold>{f.name}</Text>
-            {figures('usage', [num(w.kind, f.pct, 'int', f.color, '', '%'), ...burn])}
-          </Box>,
+          spread('usage', pick(meter, [[name, [pct, ...burn]], [name, [pct]]])),
           Client ? (
             <Client
               key={`usage-${w.kind}`}
@@ -753,13 +780,16 @@ export const register: Register = (on, options) => {
           ...(f.remaining === null
             ? []
             : [
-                <Box justifyContent="space-between">
-                  <Text dimColor>{`resets in ${formatDuration(f.remaining)}`}</Text>
-                  <Text>
-                    <Text color={P.text} bold>┃</Text>
-                    <Text dimColor>{` pace ${f.pace}%`}</Text>
-                  </Text>
-                </Box>,
+                spread(
+                  'usage',
+                  pick(meter, [
+                    [[dim(`resets in ${resets}`)], [mark, dim(` pace ${f.pace}%`)]],
+                    [[dim(`resets ${resets}`)], [mark, dim(` pace ${f.pace}%`)]],
+                    [[dim(`resets ${resets}`)], [mark, dim(` ${f.pace}%`)]],
+                    [[dim(`resets ${resets}`)], []],
+                    [[dim(resets)], []],
+                  ]),
+                ),
               ]),
         ]
       })
@@ -775,41 +805,45 @@ export const register: Register = (on, options) => {
     const parts = total === null ? [] : costParts(P, sp, total, mainAdvisor?.usd ?? 0, fromAgents?.usd ?? 0)
     const { firstOutputMs: first, replyMs: reply } = fast
     const running = fast.startedAt == null || t === 0 ? null : Math.max(0, t - fast.startedAt)
-    const ticking = (label: string, ms: number) => (
-      <Text>
-        <Text dimColor>{label}</Text>
-        <Text color={P.accent}>{formatElapsed(ms)}</Text>
-      </Text>
-    )
-    const hasSpeed = first !== null || reply !== null || running !== null
+    const ticking = running === null ? null : s(formatElapsed(running), P.accent)
+    const firstFigure = first !== null ? num('first', first, 'wait', first < FIRST_OUTPUT_FAST_MS ? P.ok : first < FIRST_OUTPUT_SLOW_MS ? P.warn : P.bad) : ticking
+    const replyFigure = reply !== null ? num('reply', reply, 'wait', P.text) : first !== null ? ticking : null
+    const replied = replyFigure ? [dim('reply '), replyFigure] : []
+    const messages = [num('messages', n, 'int', P.text), dim(n === 1 ? ' message' : ' messages')]
+    const allowed = num('allowed', v.allowed, 'int', P.text)
+    const blocked = num('blocked', v.blocked, 'int', v.blocked > 0 ? P.bad : P.text)
+    const decided = [allowed, dim(' allowed · '), blocked, dim(' blocked')]
     const sessionLines = [
-      <Box justifyContent="space-between">
-        {figures('session', [num('messages', n, 'int', P.text), dim(n === 1 ? ' message' : ' messages')])}
-        {m && t > 0 && <Text color={P.text}>{formatElapsed(t - m.startedAt)}</Text>}
-      </Box>,
-      ...(hasSpeed
+      spread('session', pick(meter, [[messages, m && t > 0 ? [s(formatElapsed(t - m.startedAt), P.text)] : []], [messages, []]])),
+      ...(firstFigure || replyFigure
         ? [
-            <Box justifyContent="space-between">
-              {first === null ? (running === null ? <Text> </Text> : ticking('first output ', running)) : figures('session', [dim('first output '), num('first', first, 'wait', first < FIRST_OUTPUT_FAST_MS ? P.ok : first < FIRST_OUTPUT_SLOW_MS ? P.warn : P.bad)])}
-              {reply !== null ? figures('session', [dim('reply '), num('reply', reply, 'wait', P.text)]) : first !== null && running !== null && ticking('reply ', running)}
-            </Box>,
+            spread(
+              'session',
+              pick(
+                meter,
+                firstFigure
+                  ? [
+                      [[dim('first output '), firstFigure], replied],
+                      [[dim('first '), firstFigure], replied],
+                      [[dim('first '), firstFigure], []],
+                    ]
+                  : [[[], replied]],
+              ),
+            ),
           ]
         : []),
-      ...(bytes === null
-        ? []
-        : [
-            <Box justifyContent="space-between">
-              <Text dimColor>transcript</Text>
-              <Text color={P.text}>{formatBytes(bytes)}</Text>
-            </Box>,
-          ]),
+      ...(bytes === null ? [] : [spread('session', [[dim('transcript')], [s(formatBytes(bytes), P.text)]])]),
       ...(v.allowed + v.blocked === 0
         ? []
         : [
-            <Box justifyContent="space-between">
-              <Text dimColor>auto mode</Text>
-              {figures('session', [num('allowed', v.allowed, 'int', P.text), dim(' allowed · '), num('blocked', v.blocked, 'int', v.blocked > 0 ? P.bad : P.text), dim(' blocked')])}
-            </Box>,
+            spread(
+              'session',
+              pick(meter, [
+                [[dim('auto mode')], decided],
+                [[dim('auto')], decided],
+                [[dim('auto')], [allowed, dim(' ✓ '), blocked, dim(' ✗')]],
+              ]),
+            ),
           ]),
       ...(total === null
         ? []
@@ -831,12 +865,16 @@ export const register: Register = (on, options) => {
                     </Box>
                   ),
                 ]),
-            ...parts.map(part => (
-              <Box justifyContent="space-between">
-                {figures('cost', [s('● ', part.color), dim(part.label.padEnd(12)), num(part.label, part.usd, 'usd', P.text)])}
-                {figures('cost', [num(`${part.label}-share`, Math.round((part.usd / total) * 100), 'int', part.color, '', '%')])}
-              </Box>
-            )),
+            ...(() => {
+              const usd = (part: CostPart) => num(part.label, part.usd, 'usd', P.text)
+              const shareOf = (part: CostPart) => num(`${part.label}-share`, Math.round((part.usd / total) * 100), 'int', part.color, '', '%')
+              const usdCells = Math.max(0, ...parts.map(part => widthOf([usd(part)])))
+              const shareCells = Math.max(0, ...parts.map(part => widthOf([shareOf(part)])))
+              const isShared = 2 + Math.max(0, ...parts.map(part => part.label.length)) + 1 + usdCells + 1 + shareCells <= meter
+              const labelCells = Math.min(12, meter - 2 - usdCells - (isShared ? 1 + shareCells : 0))
+              const label = (part: CostPart) => (labelCells < 4 ? [] : [dim(clip(part.label, labelCells - 1).padEnd(labelCells))])
+              return parts.map(part => spread('cost', [[s('● ', part.color), ...label(part), usd(part)], isShared ? [shareOf(part)] : []]))
+            })(),
           ]),
     ]
     sections.push({
@@ -856,11 +894,27 @@ export const register: Register = (on, options) => {
         tokens === null || price === undefined
           ? null
           : priceCall(price, { cache_creation_input_tokens: tokens, cache_creation: { ephemeral_1h_input_tokens: c.ttlMs === HOUR ? tokens : 0 } }) * mult
+      const warmth: Span[] = [{ text: isWarm ? '● warm' : '○ cold', color: isWarm ? P.ok : P.muted, bold: true }]
+      const lasts = c.ttlMs === HOUR ? '1h' : '5m'
+      const cost = isWarm ? reread : rewrite
+      const other = isWarm ? rewrite : reread
+      const verb = isWarm ? ' to read' : ' to rewrite'
       const cacheLines = [
-        <Box justifyContent="space-between">
-          <Text color={isWarm ? P.ok : P.muted} bold>{isWarm ? '● warm' : '○ cold'}</Text>
-          <Text color={P.text}>{isWarm ? `${formatElapsed(left)} left` : `lasts ${c.ttlMs === HOUR ? '1h' : '5m'} idle`}</Text>
-        </Box>,
+        spread(
+          'cache',
+          pick(
+            meter,
+            isWarm
+              ? [
+                  [warmth, [s(`${formatElapsed(left)} left`, P.text)]],
+                  [warmth, [s(formatElapsed(left), P.text)]],
+                ]
+              : [
+                  [warmth, [s(`lasts ${lasts} idle`, P.text)]],
+                  [warmth, [s(`${lasts} idle`, P.text)]],
+                ],
+          ),
+        ),
         ...(isWarm
           ? [
               Client ? (
@@ -870,11 +924,15 @@ export const register: Register = (on, options) => {
               ),
             ]
           : []),
-        ...(reread !== null && rewrite !== null && tokens !== null
-          ? [
-              line('cache', ['next', [num('next', isWarm ? reread : rewrite, 'usd', isWarm ? P.ok : P.warn), dim(isWarm ? ' to read ' : ' to rewrite '), num('tokens', tokens, 'tokens', P.text)]]),
-              line('cache', [isWarm ? 'if cold' : 'if warm', [num('other', isWarm ? rewrite : reread, 'usd', P.muted), dim(isWarm ? ' to rewrite' : ' to read')]]),
-            ]
+        ...(cost !== null && other !== null && tokens !== null
+          ? (() => {
+              const next = num('next', cost, 'usd', isWarm ? P.ok : P.warn)
+              const then = num('other', other, 'usd', P.muted)
+              return [
+                line('cache', ['next', [[next, dim(`${verb} `), num('tokens', tokens, 'tokens', P.text)], [next, dim(verb)], [next]]]),
+                line('cache', [isWarm ? 'if cold' : 'if warm', [[then, dim(isWarm ? ' to rewrite' : ' to read')], [then]]]),
+              ]
+            })()
           : []),
       ]
       sections.push({
@@ -884,15 +942,12 @@ export const register: Register = (on, options) => {
         ...card('round', isWarm ? P.ok : P.muted, cacheLines),
       })
     } else {
-      sections.push({ name: 'CACHE', summary: 'none yet', tint: P.muted, rows: 1, body: () => <Text dimColor>Nothing cached in this session yet.</Text> })
+      sections.push({ name: 'CACHE', summary: 'none yet', tint: P.muted, rows: 1, body: () => say('Nothing cached in this session yet.', 'Nothing cached yet.') })
     }
 
     if (adv) {
       const advisorLines = [
-        <Box justifyContent="space-between">
-          <Text color={P.alt} bold>{`✶ ${prettify(adv.model)}`}</Text>
-          {figures('advisor', [num('calls', adv.calls, 'int', P.text), dim(adv.calls === 1 ? ' call' : ' calls')])}
-        </Box>,
+        spread('advisor', [[{ text: `✶ ${prettify(adv.model)}`, color: P.alt, bold: true }], [num('calls', adv.calls, 'int', P.text), dim(adv.calls === 1 ? ' call' : ' calls')]]),
         ...advisorRows(P, adv, share, fromAgents).map(row => line('advisor', row)),
         ...(share === null
           ? []
@@ -906,7 +961,8 @@ export const register: Register = (on, options) => {
     }
 
     const working = ags.filter(a => a.doneAt === null).length
-    const typeRoom = Math.max(6, meter - STATE_CELLS - TITLE_TAIL)
+    const isTimed = meter - STATE_CELLS - TITLE_TAIL >= MIN_TYPE
+    const typeRoom = Math.max(1, meter - STATE_CELLS - (isTimed ? TITLE_TAIL : TITLE_ARROW))
     const fuseOf = (id: string, border: 'round' | 'double', color: string, rows: number, at: number) => {
       const [tl, tr, bl, br, across, down] = FRAMES[border]
       const k = Math.round(at * (inner + rows - 1))
@@ -947,7 +1003,7 @@ export const register: Register = (on, options) => {
             )}
             <Box flexShrink={0}>
               {state(a)}
-              {(a.doneAt !== null || t > 0) && <Text dimColor>{` ${formatElapsed((a.doneAt ?? t) - a.startedAt)}`}</Text>}
+              {isTimed && (a.doneAt !== null || t > 0) && <Text dimColor>{` ${formatElapsed((a.doneAt ?? t) - a.startedAt)}`}</Text>}
             </Box>
           </Box>,
           <Box justifyContent="space-between">
@@ -970,28 +1026,30 @@ export const register: Register = (on, options) => {
             const { head, cells } = agentRows(P, a)
             const advised = agentAdvisors[a.id]
             return [
-              ...(head ? [spread(a.id, head)] : []),
-              ...cells.map(pairs => grid(a.id, pairs)),
-              ...(advised ? [spread(a.id, [[s(`✶ ${prettify(advised.model)}`, P.alt)], advisedBy(P, advised, 'advisor')])] : []),
+              ...(head ? [spread(a.id, pick(meter, head))] : []),
+              ...cells.flatMap(pairs => (pairs.every(fitsHalf) ? [grid(a.id, pairs)] : pairs.map(pair => grid(a.id, [pair], meter)))),
+              ...(advised ? [spread(a.id, pick(meter, advisedBy(P, advised, 'advisor').map((value): Pair => [[s(`✶ ${prettify(advised.model)}`, P.alt)], value])))] : []),
             ]
           })(),
           ...(a.cacheAt == null
             ? []
             : (() => {
                 const left = Math.max(0, a.cacheAt + a.cacheTtlMs - t)
-                const tail = a.doneAt !== null && left > 0 ? IF_RESUMED : ''
+                const room = meter - CACHE_LABEL.length - LEFT_CELLS
+                const tail = a.doneAt !== null && left > 0 && room - IF_RESUMED.length >= MIN_BAR ? IF_RESUMED : ''
                 const tint = left === 0 || a.doneAt !== null ? P.muted : left < a.cacheTtlMs / 5 ? P.warn : P.ok
                 const percent = (left / a.cacheTtlMs) * 100
-                const width = meter - CACHE_LABEL.length - LEFT_CELLS - tail.length
+                const width = Math.max(0, room - tail.length)
                 return [
                   <Box>
                     <Text dimColor>{CACHE_LABEL}</Text>
-                    {Client ? (
-                      <Client key={`cache-left-${a.id}`} module="./bar.tsx" width={width} props={{ percent, isWorking: false, width, color: tint, ...barInk(P) }} />
-                    ) : (
-                      flat(percent, tint, width)
-                    )}
-                    <Text color={tint}>{(left > 0 ? formatElapsed(left) : 'cold').padStart(LEFT_CELLS)}</Text>
+                    {width > 0 &&
+                      (Client ? (
+                        <Client key={`cache-left-${a.id}`} module="./bar.tsx" width={width} props={{ percent, isWorking: false, width, color: tint, ...barInk(P) }} />
+                      ) : (
+                        flat(percent, tint, width)
+                      ))}
+                    <Text color={tint}>{(left > 0 ? formatElapsed(left) : 'cold').padStart(width > 0 ? LEFT_CELLS : 0)}</Text>
                     {tail && <Text dimColor>{tail}</Text>}
                   </Box>,
                 ]
@@ -1021,7 +1079,7 @@ export const register: Register = (on, options) => {
         ),
       }
     })
-    const agentBody = agentItems.length > 0 ? agentItems : [{ rows: 1, body: () => <Text dimColor>No agents in this session yet.</Text> }]
+    const agentBody = agentItems.length > 0 ? agentItems : [{ rows: 1, body: () => say('No agents in this session yet.', 'No agents yet.') }]
     sections.push({
       name: 'AGENTS',
       summary: working > 0 ? `${working} working` : ags.length > 0 ? `${ags.length} done` : 'none yet',
@@ -1039,7 +1097,9 @@ export const register: Register = (on, options) => {
           {viewing !== undefined && (
             <Box marginBottom={1} justifyContent="space-between">
               <Button plain key="view-main" onPress={() => void viewAgent($).catch(() => undefined)}>
-                <Text color={P.accent} bold>‹ main conversation</Text>
+                <Text color={P.accent} bold>
+                  {cellsOf(BACK) + ' viewing'.length <= inner ? BACK : '‹ main'}
+                </Text>
               </Button>
               <Text dimColor wrap="truncate-end">{`viewing ${ags.find(a => a.id === viewing)?.type ?? 'an agent'}`}</Text>
             </Box>
@@ -1064,14 +1124,24 @@ export const register: Register = (on, options) => {
               </Box>
             )
           })}
-          {m?.version && (
-            <Box marginTop={1} justifyContent="space-between">
-              <Text dimColor>{`Claude Code v${m.version}`}</Text>
-              <Button plain key="version" onPress={() => void openUrl($, CHANGELOG)}>
-                <Text color={P.muted}>changelog ›</Text>
-              </Button>
-            </Box>
-          )}
+          {m?.version &&
+            (() => {
+              const [[version], [changelog]] = pick(inner, [
+                [[dim(`Claude Code v${m.version}`)], [s('changelog ›')]],
+                [[dim(`v${m.version}`)], [s('changelog ›')]],
+                [[dim(`v${m.version}`)], [s('›')]],
+              ])
+              return (
+                <Box marginTop={1} justifyContent="space-between">
+                  <Text dimColor wrap="truncate-end">{version?.text}</Text>
+                  <Box flexShrink={0} marginLeft={1}>
+                    <Button plain key="version" onPress={() => void openUrl($, CHANGELOG)}>
+                      <Text color={P.muted}>{changelog?.text}</Text>
+                    </Button>
+                  </Box>
+                </Box>
+              )
+            })()}
         </Box>
         {offset > 0 && offset < columns && (
           <Box key="curtain" position="absolute" top={top} left={offset}>
@@ -1095,6 +1165,8 @@ type Span = {
   wire?: { from: number; to: number; isArrow: boolean }
 }
 type Count = { key: string; value: number; figure: Figure; before: string; after: string }
+type Pair = [Span[], Span[]]
+type CostPart = { label: string; usd: number; color: string }
 type Row = { section: number; label: string; content: Span[]; isTight?: boolean }
 type Section = { name: string; summary: string; tint?: string; rows: number; body: (clip?: number) => JSX.Element }
 
@@ -1125,6 +1197,15 @@ function join(P: Palette, parts: Span[][], sep: Span = s(' · ', P.muted)): Span
   return parts.filter(part => part.length > 0).flatMap((part, i) => (i === 0 ? part : [sep, ...part]))
 }
 
+function fit(room: number, variants: Span[][]): Span[] {
+  return pick(room, variants.map((variant): Pair => [variant, []]))[0]
+}
+
+function pick(room: number, variants: Pair[]): Pair {
+  const width = ([left, right]: Pair) => widthOf(left) + widthOf(right) + (left.length > 0 && right.length > 0 ? 1 : 0)
+  return variants.find(variant => width(variant) <= room) ?? variants[variants.length - 1] ?? [[], []]
+}
+
 function widthOf(spans: Span[]): number {
   return spans.reduce((n, span) => n + cellsOf(span.text), 0)
 }
@@ -1145,14 +1226,14 @@ export function cellsOf(text: string): number {
   return cells
 }
 
-function frame(P: Palette, rows: Row[]): Span[][] {
+function frame(P: Palette, rows: Row[], avail = Infinity): Span[][] {
   const inners = rows
     .filter(row => row.content.length > 0)
     .map(row => {
       const inner = innerOf(P, row)
       return { section: row.section, isTight: row.isTight, inner, width: widthOf(inner) }
     })
-  const max = Math.max(MIN_INNER, ...inners.map(row => row.width))
+  const max = Math.max(Math.min(MIN_INNER, avail), ...inners.map(row => row.width))
   const heavy = '━'.repeat(max)
   const divider = s(`┃ ${'─'.repeat(LABEL_W + 1)}┼${'─'.repeat(Math.max(1, max - (LABEL_W + 4)))} ┃`, P.muted)
 
@@ -1170,9 +1251,9 @@ function innerOf(P: Palette, row: Row): Span[] {
   return [s(' '), dim(row.label.padEnd(LABEL_W)), s(' '), s('│', P.muted), s('  '), ...row.content, s(' ')]
 }
 
-function roomOf(P: Palette, rows: Row[]): number {
+function roomOf(P: Palette, rows: Row[], avail = Infinity): number {
   const bare = widthOf(innerOf(P, { section: 0, label: '', content: [] }))
-  return Math.max(MIN_INNER, ...rows.map(row => widthOf(innerOf(P, row)))) - bare
+  return Math.max(Math.min(MIN_INNER, avail), ...rows.map(row => widthOf(innerOf(P, row)))) - bare
 }
 
 const CONFIRM_GAP = 2
@@ -1238,6 +1319,7 @@ function wireRows(P: Palette, open: Menu, current: string | null | undefined, ab
   const chip = above[i]
   const from = chip ? widthOf(above.slice(0, i)) + Math.floor((widthOf([chip]) - CHEVRON_CELLS) / 2) : -1
   const j = first.findIndex(span => span.value === current)
+  if (j < 0 && open.options.includes(current ?? '')) return [[s('')], [s('')]]
   const k = j < 0 ? first.findIndex(span => span.el === 'pick') : j
   const target = first[k]
   const lead = PILL_LEAD[open.kind].length
@@ -1284,11 +1366,15 @@ function isNewer(a: unknown, b: string): boolean {
   return false
 }
 
-function pathRow(P: Palette, p: Place | null): Span[] {
+function pathRow(P: Palette, p: Place | null, room = Infinity): Span[] {
   const git = p?.git
-  const path: Span[] = [{ ...s(formatCwd(p?.cwd ?? '', p?.home ?? null), P.info), el: p?.remote ? 'repo' : undefined }]
-  const panel: Span[] = [{ ...dim(`SIDEBAR ${SIDEBAR_TURN[0]}`), el: 'panel' }]
-  if (!git) return join(P, [path, panel])
+  const cwd = formatCwd(p?.cwd ?? '', p?.home ?? null)
+  const parts = cwd.split('/')
+  const paths = [cwd, ...parts.slice(2).map((_, i) => `.../${parts.slice(i + 2).join('/')}`)]
+  const last = paths[paths.length - 1] ?? cwd
+  const path = (text: string): Span[] => [{ ...s(text, P.info), el: p?.remote ? 'repo' : undefined }]
+  const panel = (isShort: boolean): Span[] => [{ ...dim(isShort ? ` ${SIDEBAR_TURN[0]}` : `SIDEBAR ${SIDEBAR_TURN[0]}`), el: 'panel' }]
+  if (!git) return fit(room, [...paths.map(text => join(P, [path(text), panel(false)])), join(P, [path(last), panel(true)])])
   const isDirty = git.insertions > 0 || git.deletions > 0 || git.untracked > 0
   const counts = [
     git.ahead > 0 && s(` ↑${git.ahead}`, P.info),
@@ -1299,7 +1385,16 @@ function pathRow(P: Palette, p: Place | null): Span[] {
     // The space is deliberate: ⊟ is drawn edge to edge and swallows a digit.
     git.stash > 0 && dim(` ⊟ ${git.stash}`),
   ].filter((span): span is Span => span !== false)
-  return join(P, [path, [dim('on'), s(' '), s(git.branch, isDirty ? P.warn : P.ok), ...counts], panel])
+  const row = (text: string, branch: string, shown: Span[], isShort: boolean) => join(P, [path(text), [dim('on'), s(' '), s(branch, isDirty ? P.warn : P.ok), ...shown], panel(isShort)])
+  const branch = clip(git.branch, BRANCH_CELLS)
+  const tight = clip(git.branch, Math.max(1, room - widthOf(row(last, '', [], true))))
+  return fit(room, [
+    ...paths.map(text => row(text, git.branch, counts, false)),
+    row(last, branch, counts, false),
+    row(last, branch, [], false),
+    row(last, branch, [], true),
+    row(last, tight, [], true),
+  ])
 }
 
 async function toggleFold($: $, name: string): Promise<void> {
@@ -1377,7 +1472,14 @@ async function toggleMenu($: $, kind: Menu['kind']): Promise<void> {
     families = await readFamilies($, m?.version ?? '')
     const all = rows.find(row => row.key === 'model')?.options ?? []
     const isLong = m?.model.endsWith('[1m]') === true
-    options = all.filter(o => !o.endsWith('[1m]') && !NOT_OFFERED.includes(o)).map(o => (isLong && all.includes(`${o}[1m]`) ? `${o}[1m]` : o))
+    const rank = (o: string) => {
+      const at = FAMILY_ORDER.findIndex(family => o.includes(family))
+      return at < 0 ? FAMILY_ORDER.length : at
+    }
+    options = all
+      .filter(o => !o.endsWith('[1m]') && !NOT_OFFERED.includes(o))
+      .map(o => (isLong && all.includes(`${o}[1m]`) ? `${o}[1m]` : o))
+      .sort((a, b) => rank(a) - rank(b))
   }
   const isRolling = !open || (open.isClosing === true && Boolean((await read($, motion)).menu))
   await animate($, 'menu', 1, isRolling, async () => {
@@ -1522,46 +1624,70 @@ async function openPanel($: $): Promise<boolean> {
   return (await $.ui.open({ id: PANE, title: 'SIDEBAR', focus: true, columns: PANE_COLUMNS })).isPlaced
 }
 
-function modelRow(P: Palette, r: Reading | null, m: { model: string; effort: string | null; version: string } | null, isWorking: boolean): Span[] {
+function modelRow(P: Palette, r: Reading | null, m: { model: string; effort: string | null; version: string } | null, isWorking: boolean, room = Infinity): Span[] {
   const pct = r?.percent ?? 0
   const color = r?.percent == null ? P.ok : pctColor(P, pct)
-  const filled = filledCells(pct)
   const used = r?.tokens ?? Math.floor(((r?.window ?? 0) * pct) / 100)
-  return join(P, [
-    [{ text: '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled), color: color, el: 'bar' }, s(' '), num('pct', pct, 'int', color, '', '%')],
-    r && r.window > 0 ? [num('used', used, 'tokens', P.text), s(`/${windowLabel(r.window)}`, P.muted)] : [],
-    [{ ...s(`${m?.model ? prettify(m.model) : 'unknown'} ${MENU_TURN[0]}`, m?.model ? modelColor(P, aliasOf(m.model) ?? '') : P.muted), el: 'model' }],
-    m?.effort ? [{ ...s(`${m.effort} effort ${MENU_TURN[0]}`, effortColor(P, m.effort)), el: 'effort', value: m.effort }] : [],
-    [{ text: ' '.repeat(isWorking ? WORKING_CELLS : READY_CELLS), el: 'claude' }],
-  ], s('  '))
+  const figures = r && r.window > 0 ? [num('used', used, 'tokens', P.text), s(`/${windowLabel(r.window)}`, P.muted)] : []
+  const bar = (cells: number): Span[] => {
+    const filled = filledCells(pct, cells)
+    return cells > 0 ? [{ text: '█'.repeat(filled) + '░'.repeat(cells - filled), color: color, el: 'bar' }, s(' ')] : []
+  }
+  const row = (cells: number, shown: Span[], isLong: boolean, sep: string, spark: number) =>
+    join(P, [
+      [...bar(cells), num('pct', pct, 'int', color, '', '%')],
+      shown,
+      [{ ...s(`${m?.model ? prettify(m.model) : 'unknown'} ${MENU_TURN[0]}`, m?.model ? modelColor(P, aliasOf(m.model) ?? '') : P.muted), el: 'model' }],
+      m?.effort ? [{ ...s(`${m.effort}${isLong ? ' effort' : ''} ${MENU_TURN[0]}`, effortColor(P, m.effort)), el: 'effort', value: m.effort }] : [],
+      spark > 0 ? [{ text: ' '.repeat(spark), el: 'claude' }] : [],
+    ], s(sep))
+  const most = Math.max(WORKING_CELLS, READY_CELLS)
+  const cells = Math.max(MIN_BOX_BAR, Math.min(BAR_WIDTH, room - widthOf(row(0, figures, true, '  ', most)) - 1))
+  const variants: [number, Span[], boolean, string, boolean][] = [
+    [cells, figures, true, '  ', true],
+    [cells, [], true, '  ', true],
+    [cells, [], false, '  ', true],
+    [cells, [], false, ' ', true],
+    [0, [], false, ' ', true],
+    [0, [], false, ' ', false],
+  ]
+  const [bars, shown, isLong, sep, isSparked] = variants.find(([n, list, long, gap, sparked]) => widthOf(row(n, list, long, gap, sparked ? most : 0)) <= room) ?? [0, [], false, ' ', false]
+  return row(bars, shown, isLong, sep, isSparked ? (isWorking ? WORKING_CELLS : READY_CELLS) : 0)
 }
 
-function filledCells(pct: number): number {
-  return Math.floor((BAR_WIDTH * Math.min(100, Math.max(0, Math.trunc(pct))) + 50) / 100)
+function filledCells(pct: number, cells = BAR_WIDTH): number {
+  return Math.floor((cells * Math.min(100, Math.max(0, Math.trunc(pct))) + 50) / 100)
 }
 
-function tokensRow(P: Palette, tot: Tokens, delta: Tokens): Span[] {
-  return join(P, [
-    bucket(P, 'in', 'in', '', tot.in, delta.in, P.info, P.info),
-    bucket(P, 'cacheWrite', 'cache', '↑', tot.cacheWrite, delta.cacheWrite, P.muted, P.warn),
-    bucket(P, 'cacheRead', 'cache', '↓', tot.cacheRead, delta.cacheRead, P.muted, P.info),
-    bucket(P, 'out', 'out', '', tot.out, delta.out, P.alt, P.alt),
-  ])
+function tokensRow(P: Palette, tot: Tokens, delta: Tokens, room = Infinity): Span[] {
+  const row = (isAdded: (plus: number) => boolean, kinds: (keyof Tokens)[]) => {
+    const buckets: Record<keyof Tokens, Span[]> = {
+      in: bucket(P, 'in', 'in', '', tot.in, delta.in, P.info, P.info, isAdded(delta.in)),
+      cacheWrite: bucket(P, 'cacheWrite', 'cache', '↑', tot.cacheWrite, delta.cacheWrite, P.muted, P.warn, isAdded(delta.cacheWrite)),
+      cacheRead: bucket(P, 'cacheRead', 'cache', '↓', tot.cacheRead, delta.cacheRead, P.muted, P.info, isAdded(delta.cacheRead)),
+      out: bucket(P, 'out', 'out', '', tot.out, delta.out, P.alt, P.alt, isAdded(delta.out)),
+    }
+    return join(P, kinds.map(kind => buckets[kind]))
+  }
+  const every: (keyof Tokens)[] = ['in', 'cacheWrite', 'cacheRead', 'out']
+  return fit(room, [row(() => true, every), row(plus => plus > 0, every), row(() => false, every), row(() => false, ['in', 'cacheRead', 'out']), row(() => false, ['in', 'out'])])
 }
 
-function bucket(P: Palette, key: string, label: string, arrow: string, value: number, plus: number, idle: string, active: string): Span[] {
+function bucket(P: Palette, key: string, label: string, arrow: string, value: number, plus: number, idle: string, active: string, isAdded = true): Span[] {
   const arrowPart = arrow ? [s(arrow, P.muted)] : []
   const added = num(`${key}-delta`, plus, 'tokens', plus > 0 ? P.ok : undefined, '(+', ')')
+  const tail = isAdded ? [s(' '), plus > 0 ? added : { ...added, dimColor: true }] : []
   return plus > 0
-    ? [{ text: label, color: active, bold: true }, ...arrowPart, s(' '), num(key, value, 'tokens', active), s(' '), added]
-    : [dim(label), ...arrowPart, s(' '), num(key, value, 'tokens', idle), s(' '), { ...added, dimColor: true }]
+    ? [{ text: label, color: active, bold: true }, ...arrowPart, s(' '), num(key, value, 'tokens', active), ...tail]
+    : [dim(label), ...arrowPart, s(' '), num(key, value, 'tokens', idle), ...tail]
 }
 
-function agentRows(P: Palette, a: Agent): { head: [Span[], Span[]] | null; cells: [string | Span[], Span[]][][] } {
+function agentRows(P: Palette, a: Agent): { head: Pair[] | null; cells: [string | Span[], Span[]][][] } {
   const n = a.calls ?? 0
-  const model = a.model ? join(P, [[s(prettify(a.model), P.alt)], a.effort ? [s(a.effort, effortColor(P, a.effort))] : []]) : []
+  const name = a.model ? [s(prettify(a.model), P.alt)] : []
+  const model = join(P, [name, a.model && a.effort ? [s(a.effort, effortColor(P, a.effort))] : []])
   const calls = n > 0 ? [num('calls', n, 'int', P.text), dim(n === 1 ? ' call' : ' calls')] : []
-  const head: [Span[], Span[]] | null = model.length + calls.length > 0 ? [model, calls] : null
+  const head: Pair[] | null = model.length + calls.length > 0 ? [[model, calls], [name, calls]] : null
   if (a.context + a.out === 0) return { head, cells: [] }
   const cost: [string, Span[]][] = a.usd > 0 ? [['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? P.warn : P.ok)]]] : []
   return {
@@ -1580,19 +1706,22 @@ function agentRows(P: Palette, a: Agent): { head: [Span[], Span[]] | null; cells
   }
 }
 
-function advisorRows(P: Palette, a: Advisor, share: number | null, fromAgents: Advisor | null): [string, Span[]][] {
-  const rows: [string, Span[]][] = [['tokens', join(P, [[num('in', a.in, 'tokens', P.info), dim(' in')], [num('out', a.out, 'tokens', P.alt), dim(' out')]])]]
+function advisorRows(P: Palette, a: Advisor, share: number | null, fromAgents: Advisor | null): [string, Span[][]][] {
+  const [tokensIn, tokensOut] = [num('in', a.in, 'tokens', P.info), num('out', a.out, 'tokens', P.alt)]
+  const rows: [string, Span[][]][] = [['tokens', [join(P, [[tokensIn, dim(' in')], [tokensOut, dim(' out')]]), join(P, [[tokensIn], [tokensOut]]), [tokensIn, dim(' in')]]]]
   if (a.usd !== null) {
-    const part = share === null ? [] : [dim(' · '), num('share', share, 'int', P.alt, '', '%'), dim(' of session')]
-    rows.push(['cost', [num('usd', a.usd, 'usd', a.usd > 0.5 ? P.warn : P.ok), ...part]])
+    const usd = num('usd', a.usd, 'usd', a.usd > 0.5 ? P.warn : P.ok)
+    const part = share === null ? [] : [dim(' · '), num('share', share, 'int', P.alt, '', '%')]
+    rows.push(['cost', [[usd, ...part, ...(share === null ? [] : [dim(' of session')])], [usd, ...part], [usd]]])
   }
   if (fromAgents) rows.push(['agents', advisedBy(P, fromAgents, 'agents')])
   return rows
 }
 
-function advisedBy(P: Palette, a: Advisor, key: string): Span[] {
-  const calls = [num(`${key}-calls`, a.calls, 'int', P.text), dim(a.calls === 1 ? ' call' : ' calls')]
-  return a.usd === null ? calls : [...calls, dim(' · '), num(`${key}-usd`, a.usd, 'usd', P.text)]
+function advisedBy(P: Palette, a: Advisor, key: string): Span[][] {
+  const count = num(`${key}-calls`, a.calls, 'int', P.text)
+  const calls = [count, dim(a.calls === 1 ? ' call' : ' calls')]
+  return [...(a.usd === null ? [] : [[...calls, dim(' · '), num(`${key}-usd`, a.usd, 'usd', P.text)]]), calls, [count]]
 }
 
 function addAdvisor(a: Advisor | null, b: Advisor | null): Advisor | null {
@@ -1606,7 +1735,7 @@ function spendClass(source: unknown): keyof Spend {
   return 'background'
 }
 
-function costParts(P: Palette, x: Spend, total: number, advisor: number, agentsAdvisor: number): { label: string; usd: number; color: string }[] {
+function costParts(P: Palette, x: Spend, total: number, advisor: number, agentsAdvisor: number): CostPart[] {
   if (x.main + x.agents + x.background === 0) return []
   const earlier = Math.max(0, total - x.main - x.agents - x.background)
   const advisorUsd = Math.min(Math.max(0, advisor), x.main + earlier)

@@ -55,7 +55,7 @@ const Wire: ClientModule<Props, State> = (props, surface) => {
   const [left, right] = [Math.min(from, to), Math.max(from, to)]
   const goal = s?.goalTo ?? goalTo
   const isUnderWay = to !== goal
-  const head = goal > to ? '▸' : '◂'
+  const head = (to === from ? goal - from : to - from) > 0 ? '▸' : '◂'
   const line = '─'.repeat(Math.max(0, right - left - 1))
   let run: string
   if (props.isArrow) run = isUnderWay || props.isClosing ? '' : '▾'
