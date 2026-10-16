@@ -1791,12 +1791,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const advice = { type: 'advisor_message', model: 'claude-fable-5-1', input_tokens: 1000, output_tokens: 100 }
     const row = (id: string) => JSON.stringify({ type: 'assistant', isSidechain: true, message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 2, output_tokens: 3, iterations: [{ type: 'message' }, advice] } } })
     let isAdvised = false
-    const files = (path: string) => (path.replace(/\\/g, '/') === own ? (isAdvised ? [row('m1'), row('m1'), row('m2')].join('\n') : '') : JSON.stringify({ type: 'user', message: { content: 'hi' } }))
+    const is = (path: string, tail: string) => path.replace(/\\/g, '/').endsWith(tail)
+    const files = (path: string) => (is(path, own) ? (isAdvised ? [row('m1'), row('m1'), row('m2')].join('\n') : '') : JSON.stringify({ type: 'user', message: { content: 'hi' } }))
     const reads: string[] = []
-    on('fs.exists', ($, e) => ({ value: [main, own].includes(e.path.replace(/\\/g, '/')) }))
+    on('fs.exists', ($, e) => ({ value: [main, own].some(tail => is(e.path, tail)) }))
     on('fs.list', () => ({ value: [] }))
     on('fs.stat', ($, e) => ({ value: { kind: 'file', size: files(e.path).length, mtimeMs: 0, isLink: false } }))
-    on('fs.read', ($, e) => (reads.push(e.path.replace(/\\/g, '/')), { value: files(e.path) }))
+    on('fs.read', ($, e) => (reads.push(e.path), { value: files(e.path) }))
     on('turn.step', async function* ($, e) {
       const serverToolUses = [{ id: 'adv1', name: 'advisor', input: {}, startedAt: 0, endedAt: 1 }]
       return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], serverToolUses, stopReason: 'end_turn' as const, usage: null }
@@ -1809,7 +1810,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     }
     await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
     await clock.settle()
-    expect([reads.length > 0, reads.every(path => path === own)]).toEqual([true, true])
+    expect([reads.length > 0, reads.every(path => is(path, own))]).toEqual([true, true])
 
     await $.telemetry.log(apiRequest({ query_source: 'agent:builtin:Explore', cost_usd: 1, input_tokens: 2, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0 }))
     const pane = await $.ui.mount({ plugin: 'statusbox', surface, component: 'Pane', requestId: 'sidebar', props: PANE })
