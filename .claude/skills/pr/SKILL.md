@@ -93,7 +93,7 @@ git diff --stat origin/<base>..HEAD
 git diff --name-only origin/<base>..HEAD | awk -F/ '{print $1}' | sort | uniq -c | sort -rn
 ```
 
-Group by area: `hooks/` (the plugin's modules), `types/` (its state contract), `themes/` (made from `hooks/skin.ts`), `tests/`, `.claude-plugin/` (manifest and marketplace), `.github/`, plus `README.md`, `CLAUDE.md`. Watch for what CLAUDE.md calls out:
+Group by area: `hooks/` (the plugin's modules), `types/` (its state contract), `themes/` (made from `hooks/theme.ts`), `tests/`, `.claude-plugin/` (manifest and marketplace), `.github/`, plus `README.md`, `CLAUDE.md`. Watch for what CLAUDE.md calls out:
 
 - **Platform branches:** a new `OS === 'Windows_NT'` check outside the areas CLAUDE.md confines them to is a design error, not a style one. Flag it in the preview so the reviewer knows a behaviour got branched rather than decided.
 - **A hook that can break the session:** every hook must call `next(e)` and return what it resolves to unless it means to answer for the engine, and nothing a hook awaits may throw past it. Flag new code that could, and remember the failure is quiet: the engine skips the hook and the box simply stops updating.
@@ -101,7 +101,7 @@ Group by area: `hooks/` (the plugin's modules), `types/` (its state contract), `
 - **The manifest:** a changed `name` in `.claude-plugin/plugin.json` or `marketplace.json` changes the install line every user typed, and the `$.state` keys.
 - **State keys:** a renamed key in `types/index.d.ts` drops a running session's value on reload.
 - **Render hooks and Clients:** a value written from a render hook, `surface.onPointer` in a Client (pointer drift in VS Code's terminal), or a new Client prop without a fallback.
-- **Themes:** a palette or `themeOf` change in `skin.ts` whose `themes/*.json` were not made again. No test reads files, so nothing else catches it.
+- **Themes:** a palette or `themeOf` change in `theme.ts` whose `themes/*.json` were not made again. No test reads files, so nothing else catches it.
 
 **Sensitive-content scan (blocking).** Inspect the diff:
 
@@ -173,7 +173,7 @@ Release PRs additionally carry the `## Release` section from Step 2.5, placed fi
 - `- [ ] Colors display correctly (green/yellow/red thresholds)`
 - `- [ ] No dim "pitwall: ... skipped" line in the transcript`
 - `- [ ] Repo row handles detached HEAD, no-repo, and fresh-clone states`
-- `- [ ] Each skin's theme in /theme repaints the box, the panel, the chat and the terminal's background; a built-in theme puts classic and the terminal's own background back`
+- `- [ ] Each pitwall theme in /theme repaints the box, the panel, the chat and the terminal's background; a built-in theme puts classic and the terminal's own background back`
 - `- [ ] Model and effort pickers open, pick and confirm; panel cards fold and the panel slides open and shut`
 - `- [ ] Hovers and clicks land where drawn in VS Code's terminal, far right and low on the screen too`
 - `- [ ] Live session on <platform> — box renders, panel opens, alert sound heard`

@@ -81,7 +81,7 @@ Tell the user how many files conflict.
 Per file:
 - Read the file and show the `<<<<<<<`/`=======`/`>>>>>>>` sections
 - Explain what each side changed and why they conflict — for this repo that's usually `hooks/register.tsx` (every hook lives in it), `tests/pitwall.test.ts` (the one test file), `types/index.d.ts` (keep every key both sides declare), or a README/CLAUDE.md section
-- A conflict in `themes/*.json` is never merged by hand: resolve `hooks/skin.ts`, then make the themes again with the command in CLAUDE.md's Development section and `git add` them
+- A conflict in `themes/*.json` is never merged by hand: resolve `hooks/theme.ts`, then make the themes again with the command in CLAUDE.md's Development section and `git add` them
 - Ask via AskUserQuestion:
   - **Keep ours** — `git checkout --ours <file> && git add <file>`
   - **Keep theirs** — `git checkout --theirs <file> && git add <file>`
@@ -147,4 +147,4 @@ Once the merge commit is created (`git log -1` shows a merge commit with `origin
 | User wants to bail mid-merge | `git merge --abort`, confirm first |
 | Some files left unresolved | List them; user finishes resolving + `git add`, then you commit, or they abort |
 | Merge touches the plugin's code | Run validate, test and tsc before committing |
-| Conflict in `themes/*.json` | Resolve `skin.ts`, make the themes again, don't hand-merge |
+| Conflict in `themes/*.json` | Resolve `theme.ts`, make the themes again, don't hand-merge |

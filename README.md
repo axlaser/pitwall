@@ -183,7 +183,7 @@ In `/config`, under pitwall:
 | Alert sounds | on |
 | Context alert (%) | 70, 0 turns it off |
 | Rate limit alert (%) | 80, 0 turns it off |
-| Skin the chat history | on |
+| Theme the chat history | on |
 | Paint the terminal background | on |
 
 Sounds play when Claude needs permission, finishes, compacts, or crosses an alert threshold.

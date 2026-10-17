@@ -190,7 +190,7 @@ const MONO_LIGHT = hex({
   efforts: ['#9a9a9a', '#6a6a6a', '#4a4a4a', '#2e2e2e', '#111111'],
 })
 
-export const SKINS: Record<string, { dark: Palette; light: Palette }> = {
+export const THEMES: Record<string, { dark: Palette; light: Palette }> = {
   classic: { dark: CLASSIC, light: CLASSIC },
   'tokyo-night': { dark: TOKYO_NIGHT, light: TOKYO_DAY },
   dracula: { dark: DRACULA, light: ALUCARD },
@@ -201,19 +201,19 @@ export const SKINS: Record<string, { dark: Palette; light: Palette }> = {
   mono: { dark: MONO, light: MONO_LIGHT },
 }
 
-export function paletteOf(skin: string, isLight: boolean): Palette {
-  const pair = SKINS[skin] ?? SKINS.classic ?? { dark: CLASSIC, light: CLASSIC }
+export function paletteOf(name: string, isLight: boolean): Palette {
+  const pair = THEMES[name] ?? THEMES.classic ?? { dark: CLASSIC, light: CLASSIC }
   return isLight ? pair.light : pair.dark
 }
 
-// Claude Code names themes/<skin>-<dark|light>.json
-// `custom:pitwall:<skin>-<dark|light>`.
-export function skinOfTheme(theme: unknown): { skin: string; isLight: boolean } | null {
+// Claude Code names themes/<name>-<dark|light>.json
+// `custom:pitwall:<name>-<dark|light>`.
+export function pitwallTheme(theme: unknown): { name: string; isLight: boolean } | null {
   const m = typeof theme === 'string' ? /^custom:pitwall:(.+)-(dark|light)$/.exec(theme) : null
-  return m?.[1] && m[1] !== 'classic' && SKINS[m[1]] ? { skin: m[1], isLight: m[2] === 'light' } : null
+  return m?.[1] && m[1] !== 'classic' && THEMES[m[1]] ? { name: m[1], isLight: m[2] === 'light' } : null
 }
 
-export const isKnownLightTheme = (theme: unknown) => (typeof theme === 'string' && theme.startsWith('light')) || skinOfTheme(theme)?.isLight === true
+export const isKnownLightTheme = (theme: unknown) => (typeof theme === 'string' && theme.startsWith('light')) || pitwallTheme(theme)?.isLight === true
 
 export type Theme = { name: string; base: 'dark' | 'light'; overrides: Record<string, string> }
 export function themeOf(p: Palette, isLight: boolean): Theme | null {

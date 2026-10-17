@@ -58,7 +58,7 @@ Read the diff and identify what changed, why, and the scope.
 - **Performance:** a subprocess or file read added to the 1-second clock or to a hook that fires per request; a Client timer that keeps redrawing once settled.
 - **Render hooks are pure, clicks are Buttons:** a value written from a render hook or a promise it started; `surface.onPointer` in a Client.
 - **Untrusted text stays data:** a path or name spliced into script text rather than passed as an argv item or env variable.
-- **Clients and themes:** a new Client prop without a fallback (a Client runs once on the old module's props after a reload); a palette or `themeOf` change in `skin.ts` without `themes/` made again, or a `themes/*.json` edited by hand.
+- **Clients and themes:** a new Client prop without a fallback (a Client runs once on the old module's props after a reload); a palette or `themeOf` change in `theme.ts` without `themes/` made again, or a `themes/*.json` edited by hand.
 - **Tests:** a new behaviour with a branch and no test in `tests/pitwall.test.ts`.
 
 - **Large single-file diffs** (>500 lines): summarize at the file level using `--stat` rather than line-by-line.

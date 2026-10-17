@@ -10,7 +10,7 @@
     "sounds": { "type": "boolean", "title": "Alert sounds", "description": "Play a sound when Claude needs permission, finishes, compacts, or crosses an alert threshold", "default": true },
     "contextAlert": { "type": "number", "title": "Context alert (%)", "description": "Alert once when the context window reaches this percentage; 0 turns it off", "default": 70, "min": 0, "max": 100 },
     "rateLimitAlert": { "type": "number", "title": "Rate limit alert (%)", "description": "Alert once per window when the 5-hour or 7-day rate limit reaches this percentage; 0 turns it off", "default": 80, "min": 0, "max": 100 },
-    "chatSkin": { "type": "boolean", "title": "Skin the chat history", "description": "With a pitwall theme picked in /theme, draw tool calls, your prompts and Claude's replies (tables as cards) in its colours", "default": true },
+    "chatTheme": { "type": "boolean", "title": "Theme the chat history", "description": "With a pitwall theme picked in /theme, draw tool calls, your prompts and Claude's replies (tables as cards) in its colours", "default": true },
     "terminalBackground": { "type": "boolean", "title": "Paint the terminal background", "description": "With a pitwall theme picked in /theme, set the terminal's own background and text colour to its own while Claude Code runs, and put them back on exit (terminals that take OSC 10 and 11)", "default": true }
   }
 }

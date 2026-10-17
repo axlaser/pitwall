@@ -77,9 +77,9 @@ export type Verdicts = { allowed: number; blocked: number }
 declare module 'claude-code' {
   interface PluginState {
     pitwall: {
-      skin: string
+      theme: string
       isLight: boolean
-      chatSkinned: boolean
+      chatThemed: boolean
       took: Record<string, number>
       grounded: boolean
       ground: string | null

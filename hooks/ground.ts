@@ -50,7 +50,7 @@ if (-not [Pitwall.Console]::Paint($osc)) { exit 1 }
 'CONOUT$'
 `
 // The text colour goes with the background: a reply drawn in the terminal's own
-// foreground stays legible when a light skin paints over a dark profile.
+// foreground stays legible when a light theme paints over a dark profile.
 export type Ground = { bg: string; text: string }
 const paint = (g: Ground) => `10;${g.text}|11;${g.bg}`
 const RESET = '110|111'

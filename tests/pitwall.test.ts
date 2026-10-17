@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { shortPath } from '../hooks/history'
 import { CARD_INSET, cellsOf, FS_READ_MAX, paneInnerOf, ROW_MS } from '../hooks/register'
-import { SKINS, paletteOf, themeOf } from '../hooks/skin'
+import { THEMES, paletteOf, themeOf } from '../hooks/theme'
 
 const engine = (on: On, { opened, turns = () => 3, onClose }: { opened?: (true | undefined)[]; turns?: () => number; onClose?: () => Promise<void> } = {}) => {
   const kept = new Map<string, unknown>()
@@ -93,21 +93,21 @@ const PANE = {
 
 const METER = paneInnerOf(PANE.bodyColumns) - CARD_INSET
 
-test('each skin paints in hex, on a dark theme and a light one', () => {
+test('each theme paints in hex, in its dark palette and its light one', () => {
   const colours = (value: unknown): string[] =>
     typeof value === 'string'
       ? [value]
       : value && typeof value === 'object'
         ? Object.entries(value).flatMap(([key, v]) => (key === 'name' ? [] : colours(v)))
         : []
-  const bad = Object.entries(SKINS)
+  const bad = Object.entries(THEMES)
     .filter(([name]) => name !== 'classic')
     .flatMap(([name, pair]) => [...colours(pair.dark), ...colours(pair.light)].filter(c => !/^#[0-9a-f]{6}$/.test(c)).map(c => `${name}: ${c}`))
-  expect([Object.keys(SKINS).length, bad]).toEqual([8, []])
+  expect([Object.keys(THEMES).length, bad]).toEqual([8, []])
 })
 
-test('each skin makes a Claude Code theme of each palette', () => {
-  const made = Object.entries(SKINS).map(([name, pair]) => [name, themeOf(pair.dark, false), themeOf(pair.light, true)] as const)
+test('each theme makes a Claude Code theme of each of its palettes', () => {
+  const made = Object.entries(THEMES).map(([name, pair]) => [name, themeOf(pair.dark, false), themeOf(pair.light, true)] as const)
   const bad = made.flatMap(([name, dark, light]) =>
     [dark, light].flatMap(theme => Object.entries(theme?.overrides ?? {}).filter(([, c]) => !/^#[0-9a-f]{6}$/.test(c)).map(([key]) => `${name}: ${key}`)),
   )
@@ -1551,7 +1551,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(kept.get('rate')).toEqual(live)
   })
 
-  test(`${surface}: a skin's theme repaints the box and the panel, its light theme in its light palette`, async ($, on) => {
+  test(`${surface}: a pitwall theme repaints the box and the panel, its light one in its light palette`, async ($, on) => {
     engine(on)
     const clock = mock.clock(on)
     mockSession(on, { settings: () => ({ effortLevel: 'xhigh' }) })
@@ -1613,7 +1613,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     return { clock, band, writes, change }
   }
 
-  test(`${surface}: a skin's own theme picked in /theme repaints the box in that skin`, async ($, on) => {
+  test(`${surface}: a pitwall theme picked in /theme repaints the box in its palette`, async ($, on) => {
     const { band, change } = await themed($, on, 'dark')
     const sonnet = async () => (await band.findAll({ type: 'Text', in: 'chip-model' })).find(text => text.props.color)?.props.color
     await change('theme', 'custom:pitwall:nord-light', 'dark')
@@ -1622,7 +1622,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect([nord, await sonnet()]).toEqual(['#5e81ac', '#5f9cf5'])
   })
 
-  test(`${surface}: a skin paints the terminal's background and text, and leaving puts the terminal's own back`, async ($, on) => {
+  test(`${surface}: a theme paints the terminal's background and text, and leaving puts the terminal's own back`, async ($, on) => {
     const { clock, writes, change } = await themed($, on, 'custom:pitwall:tokyo-night-dark')
     await clock.advance(1000)
     await change('theme', 'custom:pitwall:tokyo-night-light', 'custom:pitwall:tokyo-night-dark')
@@ -1652,7 +1652,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect([waiting, writes.map(([osc]) => osc)]).toEqual(surface === 'terminal' ? [1, ['10;#c0caf5|11;#1a1b26', '10;#f8f8f2|11;#282a36']] : [0, []])
   })
 
-  test(`${surface}: on Windows a skin paints the background through Claude Code's console`, async ($, on) => {
+  test(`${surface}: on Windows a theme paints the background through Claude Code's console`, async ($, on) => {
     const { clock, writes } = await themed($, on, 'custom:pitwall:tokyo-night-dark', 'Windows_NT')
     await clock.advance(1000)
     await $.session.end({ reason: 'prompt_input_exit', sessionId: 'abc', resume: { id: 'abc' } })
@@ -1666,7 +1666,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(writes).toEqual([])
   })
 
-  const skinned = async ($: Engine, on: On, theme = 'custom:pitwall:tokyo-night-dark') => {
+  const themedChat = async ($: Engine, on: On, theme = 'custom:pitwall:tokyo-night-dark') => {
     engine(on)
     on('config.list', () => ({ value: [{ key: 'theme', value: theme, label: 'Theme', kind: 'choice' as const, isLocked: false, provider: { plugin: 'engine', tier: 'core' as const } }] }))
     const clock = mock.clock(on)
@@ -1688,8 +1688,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     isInterrupted: false,
   })
 
-  test(`${surface}: a skinned chat draws a tool call's row in its kind's colour, with its edit and its time`, async ($, on) => {
-    await skinned($, on)
+  test(`${surface}: a themed chat draws a tool call's row in its kind's colour, with its edit and its time`, async ($, on) => {
+    await themedChat($, on)
     const mount = (props: ReturnType<typeof row>) => $.ui.mount({ plugin: 'pitwall', surface, component: 'ToolUse', requestId: props.tool_use_id, props })
     const textIn = async (ui: Awaited<ReturnType<typeof mount>>) => (await ui.findAll({ type: 'Text' })).filter(t => t.props.color).map(t => `${t.text}:${t.props.color}`)
     const edit = await mount(row('Edit', { file_path: '/home/me/repo/src/a.ts', old_string: 'a\nb', new_string: 'a\nb\nc' }))
@@ -1709,20 +1709,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 
   test(`${surface}: classic, or the toggle off, leaves the chat to Claude Code`, async ($, on) => {
-    await skinned($, on, 'dark')
+    await themedChat($, on, 'dark')
     const tool = await $.ui.mount({ plugin: 'pitwall', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
     expect(await tool.find({ key: 'tool-row' })).toBeUndefined()
   })
 
-  test(`${surface}: a skin with its chat toggle off leaves the chat to Claude Code`, { options: { chatSkin: false } }, async ($, on) => {
-    await skinned($, on)
+  test(`${surface}: a theme with its chat toggle off leaves the chat to Claude Code`, { options: { chatTheme: false } }, async ($, on) => {
+    await themedChat($, on)
     const tool = await $.ui.mount({ plugin: 'pitwall', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Read', { file_path: '/x' }) })
     const prompt = await $.ui.mount({ plugin: 'pitwall', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'hi', origin: { kind: 'composer' }, isExpanded: true } })
     expect([await tool.find({ key: 'tool-row' }), await prompt.find({ key: 'prompt-row' })]).toEqual([undefined, undefined])
   })
 
-  test(`${surface}: a skinned chat outlines the person's prompt and draws a reply's tables as cards`, async ($, on) => {
-    await skinned($, on)
+  test(`${surface}: a themed chat outlines the person's prompt and draws a reply's tables as cards`, async ($, on) => {
+    await themedChat($, on)
     const prompt = await $.ui.mount({ plugin: 'pitwall', surface, component: 'UserMessage', requestId: 'm1', props: { text: 'fix the bar', origin: { kind: 'composer' }, isExpanded: true } })
     const notice = await $.ui.mount({
       plugin: 'pitwall',

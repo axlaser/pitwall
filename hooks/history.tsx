@@ -1,5 +1,5 @@
 import type { Elements } from 'claude-code'
-import type { Palette } from './skin'
+import type { Palette } from './theme'
 
 type El = Elements['terminal']
 

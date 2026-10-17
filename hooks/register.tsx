@@ -9,9 +9,9 @@ import { apportion } from './split'
 import type { Figure } from './count'
 import { ground, keepGround, unground } from './ground'
 import { notify } from './notify'
-import { isKnownLightTheme, paletteOf, skinOfTheme } from './skin'
+import { isKnownLightTheme, paletteOf, pitwallTheme } from './theme'
 import { promptRow, replyBlock, toolRow } from './history'
-import type { Palette } from './skin'
+import type { Palette } from './theme'
 
 type $ = EngineInterface
 
@@ -39,9 +39,9 @@ const folded = atom({ plugin: 'pitwall', key: 'folded' } as const, [] as string[
 const previews = atom({ plugin: 'pitwall', key: 'previews' } as const, [] as Preview[])
 const now = atom({ plugin: 'pitwall', key: 'now' } as const, 0)
 const panelClosed = atom({ plugin: 'pitwall', key: 'panelClosed' } as const, false)
-const skin = atom({ plugin: 'pitwall', key: 'skin' } as const, 'classic' as string)
+const theme = atom({ plugin: 'pitwall', key: 'theme' } as const, 'classic' as string)
 const isLight = atom({ plugin: 'pitwall', key: 'isLight' } as const, false)
-const chatSkinned = atom({ plugin: 'pitwall', key: 'chatSkinned' } as const, true)
+const chatThemed = atom({ plugin: 'pitwall', key: 'chatThemed' } as const, true)
 const grounded = atom({ plugin: 'pitwall', key: 'grounded' } as const, true)
 const took = atom({ plugin: 'pitwall', key: 'took' } as const, {} as Record<string, number>)
 const TOOK_KEPT = 200
@@ -113,7 +113,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await seedSession($)
-    await seedSkin($, options)
+    await seedTheme($, options)
     await $.command.register({ name: 'sidebar', description: 'Open the side panel: usage, the session and its cost, the prompt cache, the advisor and agents' })
     $.clock.every(1000, () => {
       void $.clock
@@ -132,7 +132,7 @@ export const register: Register = (on, options) => {
     const isAnother = e.source === 'resume' || e.source === 'clear' || e.source === 'fork'
     if (isAnother && e.session_id !== seededFor) {
       void seedSession($).catch(() => undefined)
-      void seedSkin($, options)
+      void seedTheme($, options)
         .then(() => keepGround($))
         .catch(() => undefined)
     }
@@ -142,14 +142,14 @@ export const register: Register = (on, options) => {
   on('config.set', { key: 'theme' }, async ($, e, next) => {
     const r = await next(e)
     if ('value' in r) {
-      await update($, skin, () => skinOfTheme(r.value)?.skin ?? 'classic')
+      await update($, theme, () => pitwallTheme(r.value)?.name ?? 'classic')
       await update($, isLight, () => isKnownLightTheme(r.value))
     }
     return r
   })
-  on('config.set', { key: 'pitwall.chatSkin' }, async ($, e, next) => {
+  on('config.set', { key: 'pitwall.chatTheme' }, async ($, e, next) => {
     const r = await next(e)
-    if ('value' in r) await update($, chatSkinned, () => r.value !== false)
+    if ('value' in r) await update($, chatThemed, () => r.value !== false)
     return r
   })
   on('config.set', { key: 'pitwall.terminalBackground' }, async ($, e, next) => {
@@ -1972,24 +1972,24 @@ function take<V>(waiting: Map<string, V[]>, key: string): V | undefined {
   return first
 }
 
-async function seedSkin($: $, options: Record<string, unknown>): Promise<void> {
+async function seedTheme($: $, options: Record<string, unknown>): Promise<void> {
   const rows = await $.config.list().catch(() => [])
   const row = (key: string) => rows.find(x => x.key === key)?.value
-  const theme = row('theme')
-  await update($, skin, () => skinOfTheme(theme)?.skin ?? 'classic')
-  await update($, isLight, () => isKnownLightTheme(theme))
-  await update($, chatSkinned, () => (row('pitwall.chatSkin') ?? options.chatSkin) !== false)
+  const picked = row('theme')
+  await update($, theme, () => pitwallTheme(picked)?.name ?? 'classic')
+  await update($, isLight, () => isKnownLightTheme(picked))
+  await update($, chatThemed, () => (row('pitwall.chatTheme') ?? options.chatTheme) !== false)
   await update($, grounded, () => (row('pitwall.terminalBackground') ?? options.terminalBackground) !== false)
 }
 
 async function paint($: $): Promise<{ name: string; P: Palette }> {
-  const [name, light] = await Promise.all([read($, skin), read($, isLight)])
+  const [name, light] = await Promise.all([read($, theme), read($, isLight)])
   return { name, P: paletteOf(name, light) }
 }
 
 async function chatPalette($: $): Promise<Palette | null> {
   const { name, P } = await paint($)
-  return (await read($, chatSkinned)) && name !== 'classic' ? P : null
+  return (await read($, chatThemed)) && name !== 'classic' ? P : null
 }
 
 async function seedSession($: $): Promise<void> {
