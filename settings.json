@@ -1,6 +1,6 @@
 {
   "subagentStatusLine": {
     "type": "command",
-    "command": "grep -o '\"id\":\"[^\"]*\"' | sed 's/.*/{&,\"content\":\"\"}/'"
+    "command": "set -- `# <#`\ngrep -o '\"id\":\"[^\"]*\"' | sed 's/.*/{&,\"content\":\"\"}/'\nexit\n#>\n[regex]::Matches(($input | Out-String), '\"id\":\"[^\"]*\"') | % { '{' + $_.Value + ',\"content\":\"\"}' }"
   }
 }
