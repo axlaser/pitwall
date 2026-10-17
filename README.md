@@ -6,7 +6,7 @@
 Live telemetry above your prompt, a side panel for cost, cache and agents,<br>
 and fourteen themes that repaint all of Claude Code.
 
-<img src="assets/hero.gif" alt="pitwall: the box above the prompt and the side panel while Claude and two subagents work" width="100%">
+<img src="assets/hero.gif" alt="pitwall: the box above the prompt and the side panel while two subagents work, one agent's transcript opened from its card, and the panel resized" width="100%">
 
 [Install](#install) · [The box](#the-box) · [The panel](#the-side-panel) · [Agents](#agents) · [Themes](#themes) · [Settings](#settings)
 
@@ -76,26 +76,50 @@ Click the model or the effort to open its picker, pick, and `✓ Confirm`.
 
 Docks beside the transcript in fullscreen mode. Open it with `/sidebar` or `SIDEBAR ›`.
 
-| Card | Shows |
-|------|-------|
-| **Usage** | 5-hour and 7-day limits, a pace tick, time to reset |
-| **Session** | Messages, turn times, transcript size, total cost and its split |
-| **Cache** | Warm or cold, the countdown, the next message's cost |
-| **Advisor** | Calls, tokens, cost and share |
-| **Agents** | A card per subagent |
-
-Click a section's name to fold it to one line.
+It holds a card each for usage, the session, the cache, the advisor and every subagent. Click a section's name to fold it to one line.
 
 <br clear="right">
 
 <details>
 <summary>Keys and sizing</summary>
 
-- `ctrl+x ←` / `ctrl+x →` resize it, `ctrl+x x` closes it.
+- Drag its edge, or `ctrl+x ←` / `ctrl+x →`, to resize it; `ctrl+x x` closes it.
 - Needs fullscreen mode (`"tui": "fullscreen"`) and 110 columns or more.
 - At any width each card keeps its rows on one line.
 
 </details>
+
+### Usage
+
+<img align="right" src="assets/usage.png" alt="The usage card: the 5-hour and 7-day limits with their pace ticks" width="38%">
+
+Your 5-hour and 7-day rate limits: how much is used, and when each window resets. The tick marks an even pace through the window, so a bar past its tick is spending faster than the limit lasts.
+
+<br clear="right">
+
+### Session
+
+<img align="right" src="assets/session.gif" alt="The session card while two subagents start: the total cost climbs and its split moves toward agents" width="38%">
+
+Messages, time to first output and to the full reply, transcript size, and auto mode's allowed and blocked calls. Then the session's cost, split between the main conversation, the advisor, subagents and background work, moving as each request lands.
+
+<br clear="right">
+
+### Cache
+
+<img align="right" src="assets/cache.gif" alt="The cache card counting down, then resetting when a message is sent" width="38%">
+
+Whether the prompt cache is warm and how long until it goes cold. **next** is what your next message pays to read it; **if cold**, what it would pay to write it again. Every request resets the countdown.
+
+<br clear="right">
+
+### Advisor
+
+<img align="right" src="assets/advisor.png" alt="The advisor card: its model, one call, tokens in and out, cost and share of the session" width="38%">
+
+Appears once Claude consults the advisor: its model, calls, tokens, cost and share of the session. A subagent's advisor calls count here too.
+
+<br clear="right">
 
 ## Agents
 
@@ -104,10 +128,13 @@ Click a section's name to fold it to one line.
 Every subagent gets a card: its task, model, effort, tokens, cost and cache countdown, live while it works.
 
 - **■ Stop**, then **■ Confirm**, stops a running agent.
-- **Click its name** to watch its transcript; **‹ main conversation** goes back.
 - **✕ dismiss** clears a finished one. They also leave on their own after a minute, and slide back in if Claude resumes them.
 
 <br clear="right">
+
+**Click an agent's name** to open its transcript in the main view. **‹ main conversation** at the top of the panel goes back, and so does clicking its name again.
+
+<img src="assets/agents-view.gif" alt="Opening each agent's transcript from its card, then going back by the main conversation row and by the agent's name" width="100%">
 
 ## Themes
 
