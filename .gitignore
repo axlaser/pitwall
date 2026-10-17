@@ -1,3 +1,10 @@
 .DS_Store
 *.log
 /docs/plans
+.venv/
+
+# The engine writes the API's types here whenever it loads the plugin.
+/.claude-plugin/types/
+
+# Claude Code worktrees: separate checkouts of this repo, never content.
+/.claude/worktrees/

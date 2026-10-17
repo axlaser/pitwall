@@ -1,0 +1,5 @@
+{
+  "name": "pitwall",
+  "owner": { "name": "axlaser" },
+  "plugins": [{ "name": "pitwall", "source": "./" }]
+}
