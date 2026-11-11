@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionUsage, TurnStepInput } from 'claude-code'
 
-import type { Advisor, Agent, Alerted, Cache, Git, Menu, Motion, Place, Preview, RateWindow, Reading, Speed, Spend, Tokens, Verdicts } from '../types'
+import type { Advisor, Agent, Alerted, Cache, Git, Menu, Meta, Motion, Place, Preview, RateWindow, Reading, Speed, Spend, Tokens, Verdicts } from '../types'
 import { figure, formatElapsed } from './count'
 import { RAMP_HIGH, RAMP_MID } from './bar'
 import { READY_CELLS, WORKING_CELLS } from './claude'
@@ -12,6 +12,8 @@ import { notify } from './notify'
 import { isKnownLightTheme, paletteOf, pitwallTheme } from './theme'
 import { promptRow, replyBlock, toolRow } from './history'
 import type { Palette } from './theme'
+import { deskBand, deskPane } from './desktop'
+import type { AgentFacts, BandFacts, Fig, PaneFacts, Part, Rate, Section as DeskSection, Stat, Tone } from './desktop'
 
 type $ = EngineInterface
 
@@ -431,8 +433,6 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || (e.surface !== 'terminal' && e.surface !== 'desktop')) return next(e)
-    const { P } = await paint($)
-    if (e.surface === 'terminal') ground($, (await read($, grounded)) && P.bg ? { bg: P.bg, text: P.text } : null)
     if (!isPanelOffered && e.viewport?.isFullscreen === true) {
       isPanelOffered = true
       if (!(await read($, panelClosed))) {
@@ -442,19 +442,25 @@ export const register: Register = (on, options) => {
           .catch(() => undefined)
       }
     }
-    const [r, session, chosenEffort, p, tot, delta, pasted, isPanelOpen, open, moving] = await Promise.all([
+    const [r, session, chosenEffort, p, tot, delta, isPanelOpen] = await Promise.all([
       read($, reading),
       read($, meta),
       read($, override),
       read($, place),
       read($, totals),
       read($, last),
-      read($, previews),
       $.ui.panes().then(panes => panes.some(pane => pane.id === PANE)),
-      read($, menu),
-      read($, motion),
     ])
     const m = session && { ...session, effort: chosenEffort ?? session.effort }
+    if (e.surface === 'desktop') {
+      return deskBand($.ui.resolve(e), bandFacts(r, p, tot, delta, e.props.isWorking, isPanelOpen), {
+        togglePanel: () => void togglePanel($, false).catch(() => undefined),
+        compact: () => void $.session.compact().catch(() => undefined),
+      })
+    }
+    const { P } = await paint($)
+    ground($, (await read($, grounded)) && P.bg ? { bg: P.bg, text: P.text } : null)
+    const [pasted, open, moving] = await Promise.all([read($, previews), read($, menu), read($, motion)])
     const pct = r?.percent ?? 0
     const avail = e.props.bodyColumns - 4
     const room = avail - widthOf(innerOf(P, { section: 0, label: '', content: [] }))
@@ -598,7 +604,7 @@ export const register: Register = (on, options) => {
           <Text color="composerSidebarBackground">{lines.map(() => '▌').join('\n')}</Text>
         </Box>
         {pct >= 85 && !e.props.isWorking && (
-          <Button key="compact" label="compact context" onPress={() => void $.session.compact()} />
+          <Button key="compact" label="compact context" onPress={() => void $.session.compact().catch(() => undefined)} />
         )}
       </Box>
     )
@@ -626,8 +632,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { P } = await paint($)
-    const [ags, armed, t, mainAdvisor, agentAdvisors, r, sp, n, m, fast, c, folds, moving, bytes, v] = await Promise.all([
+    const [ags, armed, t, mainAdvisor, agentAdvisors, r, sp, n, m, fast, c, folds, bytes, v] = await Promise.all([
       read($, agents),
       read($, stopArmed),
       read($, now),
@@ -640,13 +645,24 @@ export const register: Register = (on, options) => {
       read($, speed),
       read($, cache),
       read($, folded),
-      read($, motion),
       read($, transcriptBytes),
       read($, verdicts),
     ])
     const viewing = e.props.view.agentId
     const fromAgents = Object.values(agentAdvisors).reduce<Advisor | null>(addAdvisor, null)
     const adv = addAdvisor(mainAdvisor, fromAgents)
+    if (e.surface === 'desktop') {
+      const facts = paneFacts({ ags, armed, t, mainAdvisor, fromAgents, adv, agentAdvisors, r, sp, n, m, fast, c, folds, bytes, v })
+      return deskPane($.ui.resolve(e), facts, {
+        fold: name => void toggleFold($, name, false).catch(() => undefined),
+        stop: id => {
+          const a = ags.find(x => x.id === id)
+          if (a) void stopAgent($, a, false).catch(() => undefined)
+        },
+        dismiss: id => void dismissAgent($, id, false).catch(() => undefined),
+      })
+    }
+    const [{ P }, moving] = await Promise.all([paint($), read($, motion)])
     const elements = $.ui.resolve(e)
     const { Box, Button, Text } = elements
     const Client = 'Client' in elements ? elements.Client : undefined
@@ -756,10 +772,11 @@ export const register: Register = (on, options) => {
 
     if (r && r.rate.length > 0) {
       const usageLines = r.rate.flatMap((w, i) => {
-        const f = rateFacts(P, w, t)
+        const f = rateFacts(w, t)
+        const color = P[f.tone]
         const burn = Math.abs(f.burn) >= 1 ? [s(' '), num(`${w.kind}-burn`, Math.abs(f.burn), 'int', f.burn > 0 ? P.bad : P.ok, f.burn > 0 ? '⇡' : '⇣', '%')] : []
         const name: Span[] = [{ text: f.name, bold: true }]
-        const pct = num(w.kind, f.pct, 'int', f.color, '', '%')
+        const pct = num(w.kind, f.pct, 'int', color, '', '%')
         const mark: Span = { text: '┃', color: P.text, bold: true }
         const resets = f.remaining === null ? '' : formatDuration(f.remaining)
         return [
@@ -773,7 +790,7 @@ export const register: Register = (on, options) => {
               props={{ percent: w.percentUsed, isWorking: false, width: meter, ...(f.pace !== null && { pace: f.pace }), ...barInk(P) }}
             />
           ) : (
-            flat(w.percentUsed, f.color)
+            flat(w.percentUsed, color)
           ),
           ...(f.remaining === null
             ? []
@@ -793,14 +810,14 @@ export const register: Register = (on, options) => {
       })
       sections.push({
         name: 'USAGE',
-        summary: r.rate.map(w => `${rateFacts(P, w, t).name} ${Math.round(w.percentUsed)}%`).join(' · '),
+        summary: r.rate.map(w => `${rateFacts(w, t).name} ${Math.round(w.percentUsed)}%`).join(' · '),
         ...card('round', P.cool, usageLines),
       })
     }
 
     const spent = sp.main + sp.agents + sp.background
     const total = r?.costUsd == null ? spent || null : Math.max(r.costUsd, spent)
-    const parts = total === null ? [] : costParts(P, sp, total, mainAdvisor?.usd ?? 0, fromAgents?.usd ?? 0)
+    const parts = total === null ? [] : costParts(sp, total, mainAdvisor?.usd ?? 0, fromAgents?.usd ?? 0).map(part => ({ ...part, color: P[part.tone] }))
     const { firstOutputMs: first, replyMs: reply } = fast
     const running = fast.startedAt == null || t === 0 ? null : Math.max(0, t - fast.startedAt)
     const ticking = running === null ? null : s(formatElapsed(running), P.accent)
@@ -885,13 +902,7 @@ export const register: Register = (on, options) => {
       const left = c.at === null ? 0 : c.at + c.ttlMs - t
       const isWarm = left > 0
       const tokens = r?.tokens ?? null
-      const price = priceOf(c.model)
-      const mult = orgPricing?.multiplier ?? 1
-      const reread = tokens === null || price === undefined ? null : priceCall(price, { cache_read_input_tokens: tokens }) * mult
-      const rewrite =
-        tokens === null || price === undefined
-          ? null
-          : priceCall(price, { cache_creation_input_tokens: tokens, cache_creation: { ephemeral_1h_input_tokens: c.ttlMs === HOUR ? tokens : 0 } }) * mult
+      const { reread, rewrite } = cachePrices(c, tokens)
       const warmth: Span[] = [{ text: isWarm ? '● warm' : '○ cold', color: isWarm ? P.ok : P.muted, bold: true }]
       const lasts = c.ttlMs === HOUR ? '1h' : '5m'
       const cost = isWarm ? reread : rewrite
@@ -1077,10 +1088,10 @@ export const register: Register = (on, options) => {
         ),
       }
     })
-    const agentBody = agentItems.length > 0 ? agentItems : [{ rows: 1, body: () => say('No agents in this session yet.', 'No agents yet.') }]
+    const agentBody = agentItems.length > 0 ? agentItems : [{ rows: 1, body: () => say('No agents running.', 'None running.') }]
     sections.push({
       name: 'AGENTS',
-      summary: working > 0 ? `${working} working` : ags.length > 0 ? `${ags.length} done` : 'none yet',
+      summary: working > 0 ? `${working} working` : ags.length > 0 ? `${ags.length} done` : 'none running',
       tint: working > 0 ? P.accent : P.muted,
       rows: agentBody.reduce((sum, item) => sum + item.rows, 0),
       body: () => <Box flexDirection="column">{agentBody.map(item => item.body())}</Box>,
@@ -1151,6 +1162,253 @@ export const register: Register = (on, options) => {
   })
 }
 
+const fig = (key: string, value: number, kind: Figure, tone?: Tone, before = '', after = ''): Fig => ({
+  key,
+  text: before + figure(kind, Number.isFinite(value) ? value : 0) + after,
+  ...(tone && { tone }),
+})
+const said = (key: string, text: string, tone?: Tone): Fig => ({ key, text, ...(tone && { tone }) })
+const money = (usd: number) => (usd >= 1 ? `$${usd.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}` : figure('usd', usd))
+const cash = (key: string, usd: number, tone?: Tone): Fig => said(key, money(Number.isFinite(usd) ? usd : 0), tone)
+const shareOf = (key: string, part: number): Fig => {
+  const pct = part * 100
+  return said(key, pct > 0 && pct < 0.5 ? '<1%' : pct < 100 && pct >= 99.5 ? '>99%' : `${Math.round(pct)}%`)
+}
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
+function bandFacts(r: Reading | null, p: Place | null, tot: Tokens, delta: Tokens, isWorking: boolean, isPanelOpen: boolean): BandFacts {
+  const pct = r?.percent ?? 0
+  const tone: Tone = pct >= RAMP_HIGH ? 'bad' : pct >= RAMP_MID ? 'warn' : 'ok'
+  const used = r?.tokens ?? Math.floor(((r?.window ?? 0) * pct) / 100)
+  const cwd = formatCwd(p?.cwd ?? '', p?.home ?? null)
+  const git = p?.git ?? null
+  const token = (kind: keyof Tokens, label: string) => ({
+    kind,
+    label,
+    value: fig(kind, tot[kind], 'tokens'),
+    delta: delta[kind] > 0 ? fig(`${kind}-delta`, delta[kind], 'tokens', 'ok', '+') : null,
+  })
+  const counts: { text: string; tone: Tone }[] = git
+    ? [
+        ...(git.ahead > 0 ? [{ text: `↑${git.ahead}`, tone: 'info' as const }] : []),
+        ...(git.behind > 0 ? [{ text: `↓${git.behind}`, tone: 'alt' as const }] : []),
+        ...(git.insertions > 0 ? [{ text: `+${git.insertions}`, tone: 'ok' as const }] : []),
+        ...(git.deletions > 0 ? [{ text: `−${git.deletions}`, tone: 'bad' as const }] : []),
+        ...(git.untracked > 0 ? [{ text: `${git.untracked} untracked`, tone: 'muted' as const }] : []),
+        ...(git.stash > 0 ? [{ text: `${git.stash} stashed`, tone: 'muted' as const }] : []),
+      ]
+    : []
+  const isDirty = git !== null && git.insertions + git.deletions + git.untracked > 0
+  return {
+    isWorking,
+    context: r
+      ? {
+          percent: pct,
+          tone,
+          pct: fig('pct', pct, 'int', tone, '', '%'),
+          used: r.window > 0 ? fig('used', used, 'tokens') : null,
+          window: r.window > 0 ? windowLabel(r.window) : null,
+        }
+      : null,
+    tokens: [token('in', 'Input'), token('out', 'Output'), token('cacheRead', 'Cache read'), token('cacheWrite', 'Cache write')],
+    repo: {
+      name: cwd.split('/').filter(Boolean).at(-1) ?? cwd,
+      path: cwd,
+      remote: p?.remote ?? null,
+      branch: git?.branch ?? null,
+      branchTone: isDirty ? 'warn' : 'ok',
+      counts,
+    },
+    isPanelOpen,
+    canCompact: pct >= 85 && !isWorking,
+  }
+}
+
+function paneFacts(x: {
+  ags: Agent[]
+  armed: string | null
+  t: number
+  mainAdvisor: Advisor | null
+  fromAgents: Advisor | null
+  adv: Advisor | null
+  agentAdvisors: Record<string, Advisor>
+  r: Reading | null
+  sp: Spend
+  n: number
+  m: Meta | null
+  fast: Speed
+  c: Cache | null
+  folds: string[]
+  bytes: number | null
+  v: Verdicts
+}): PaneFacts {
+  const { ags, t, r, n, m, c, v } = x
+  const sections: DeskSection[] = []
+  const section = (name: string, summary: string, tone: Tone, body: DeskSection['body']) =>
+    sections.push({ name, title: capital(name.toLowerCase()), summary, tone, isOpen: !x.folds.includes(name), body })
+
+  if (r && r.rate.length > 0) {
+    const windows = r.rate.map((w): Rate => {
+      const f = rateFacts(w, t)
+      const tone = f.tone
+      const isBurning = f.pace !== null && Math.abs(f.burn) >= 1
+      return {
+        kind: w.kind,
+        name: f.name,
+        pct: fig(`usage-${w.kind}`, f.pct, 'int', tone, '', '%'),
+        percent: w.percentUsed,
+        tone,
+        pace: f.pace,
+        resets: f.remaining === null ? null : formatDuration(f.remaining),
+        burn: isBurning ? fig(`usage-${w.kind}-burn`, Math.abs(f.burn), 'int', f.burn > 0 ? 'warn' : 'ok', '', f.burn > 0 ? '% ahead of pace' : '% under pace') : null,
+      }
+    })
+    section('USAGE', r.rate.map(w => `${rateFacts(w, t).name} ${Math.round(w.percentUsed)}%`).join(' · '), 'muted', { kind: 'usage', windows })
+  }
+
+  const { firstOutputMs: first, replyMs: reply } = x.fast
+  const running = x.fast.startedAt == null || t === 0 ? null : Math.max(0, t - x.fast.startedAt)
+  const ticking = running === null ? null : said('session-running', formatElapsed(running), 'accent')
+  const firstFig = first !== null ? fig('session-first', first, 'wait', first < FIRST_OUTPUT_FAST_MS ? 'ok' : first < FIRST_OUTPUT_SLOW_MS ? 'warn' : 'bad') : ticking
+  const replyFig = reply !== null ? fig('session-reply', reply, 'wait') : first !== null ? ticking : null
+  const stats: Stat[] = [
+    { label: 'Messages', icon: 'message', parts: [fig('session-messages', n, 'int')] },
+    ...(m && t > 0 ? [{ label: 'Elapsed', icon: 'clock' as const, parts: [said('session-elapsed', formatElapsed(t - m.startedAt))] }] : []),
+    ...(firstFig ? [{ label: 'First output', icon: 'timer' as const, parts: [firstFig] }] : []),
+    ...(replyFig ? [{ label: 'Reply', icon: 'hourglass' as const, parts: [replyFig] }] : []),
+    ...(x.bytes === null ? [] : [{ label: 'Transcript', icon: 'file' as const, parts: [said('session-transcript', formatBytes(x.bytes))] }]),
+    ...(v.allowed + v.blocked === 0
+      ? []
+      : [{ label: 'Auto mode', icon: 'shield' as const, parts: [fig('session-allowed', v.allowed, 'int'), ' allowed · ', fig('session-blocked', v.blocked, 'int', v.blocked > 0 ? 'bad' : undefined), ' blocked'] }]),
+  ]
+  const spent = x.sp.main + x.sp.agents + x.sp.background
+  const total = r?.costUsd == null ? spent || null : Math.max(r.costUsd, spent)
+  const cost =
+    total === null
+      ? null
+      : {
+          total: cash('cost-total', total, 'accent'),
+          parts: costParts(x.sp, total, x.mainAdvisor?.usd ?? 0, x.fromAgents?.usd ?? 0).map(part => ({
+            label: capital(part.label),
+            usd: cash(`cost-${part.label}`, part.usd),
+            share: shareOf(`cost-${part.label}-share`, part.usd / total),
+            tone: part.tone,
+            weight: part.usd,
+          })),
+        }
+  const sessionSummary = [`${n} ${plural(n, 'message', 'messages')}`, ...(total === null ? [] : [money(total)]), ...(v.blocked > 0 ? [`${v.blocked} blocked`] : [])]
+  section('SESSION', sessionSummary.join(' · '), 'muted', { kind: 'session', stats, cost })
+
+  if (c) {
+    const left = c.at === null ? 0 : c.at + c.ttlMs - t
+    const isWarm = left > 0
+    const tokens = r?.tokens ?? null
+    const { reread, rewrite } = cachePrices(c, tokens)
+    const [now, other] = isWarm ? [reread, rewrite] : [rewrite, reread]
+    const rows: Stat[] =
+      now !== null && other !== null && tokens !== null
+        ? [
+            { label: 'Next call', icon: 'zap', parts: [cash('cache-next', now, isWarm ? 'ok' : 'warn'), isWarm ? ' to read ' : ' to rewrite ', fig('cache-tokens', tokens, 'tokens')] },
+            { label: isWarm ? 'If cold' : 'If warm', icon: 'database', parts: [cash('cache-other', other), isWarm ? ' to rewrite' : ' to read'] },
+          ]
+        : []
+    const tone: Tone = isWarm ? (left < c.ttlMs / 5 ? 'warn' : 'ok') : 'muted'
+    const lasts = c.ttlMs === HOUR ? '1h' : '5m'
+    const cache = { isWarm, status: isWarm ? 'Warm' : 'Cold', time: isWarm ? `${formatElapsed(left)} left` : `Lasts ${lasts} idle`, percent: isWarm ? (left / c.ttlMs) * 100 : null, tone, rows }
+    section('CACHE', isWarm ? `Warm · ${formatElapsed(left)} left` : 'Cold', isWarm ? 'ok' : 'muted', { kind: 'cache', cache })
+  } else {
+    section('CACHE', 'None yet', 'muted', { kind: 'cache', cache: null })
+  }
+
+  const adv = x.adv
+  if (adv) {
+    const share = adv.usd != null && r?.costUsd ? Math.min(100, Math.round((adv.usd / r.costUsd) * 100)) : null
+    const rows: Stat[] = [
+      { label: 'Input', icon: 'input', parts: [fig('advisor-in', adv.in, 'tokens')] },
+      { label: 'Output', icon: 'output', parts: [fig('advisor-out', adv.out, 'tokens')] },
+    ]
+    if (adv.usd !== null) {
+      const ofSession: Part[] = share === null ? [] : [' · ', fig('advisor-share', share, 'int', 'alt', '', '%'), ' of session']
+      rows.push({ label: 'Cost', icon: 'coin', parts: [cash('advisor-usd', adv.usd), ...ofSession] })
+    }
+    const by = x.fromAgents
+    if (by) {
+      const usd: Part[] = by.usd === null ? [] : [' · ', cash('advisor-agents-usd', by.usd)]
+      rows.push({ label: 'From agents', icon: 'bot', parts: [fig('advisor-agents-calls', by.calls, 'int'), plural(by.calls, ' call', ' calls'), ...usd] })
+    }
+    const advisor = { model: prettify(adv.model), calls: [fig('advisor-calls', adv.calls, 'int'), plural(adv.calls, ' call', ' calls')], rows, share }
+    const summary = [`${adv.calls} ${plural(adv.calls, 'call', 'calls')}`, ...(adv.usd === null ? [] : [money(adv.usd)])].join(' · ')
+    section('ADVISOR', summary, 'alt', { kind: 'advisor', advisor })
+  }
+
+  const shown = [
+    ...ags.filter(a => a.doneAt === null),
+    ...ags.filter(a => a.doneAt !== null).sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0)).slice(0, ENDED_SHOWN),
+  ]
+  const agentFacts = shown.map((a): AgentFacts => {
+    const isStopping = halting.has(a.id) && a.doneAt === null
+    const state = isStopping ? 'stopping' : a.doneAt === null ? 'working' : a.status === 'completed' ? 'done' : 'failed'
+    const stateText = { stopping: 'Stopping…', working: 'Working', done: '✓ Done', failed: `✗ ${capital(a.status)}` }[state]
+    const advised = x.agentAdvisors[a.id]
+    const stats: Stat[] = [
+      ...(a.context + a.out === 0
+        ? []
+        : ([
+            { label: 'In', icon: 'input', parts: [fig(`${a.id}-in`, a.in ?? 0, 'tokens')] },
+            { label: 'Out', icon: 'output', parts: [fig(`${a.id}-out`, a.out, 'tokens')] },
+            { label: 'Context', icon: 'gauge', parts: [fig(`${a.id}-context`, a.context, 'tokens')] },
+            { label: 'Cache read', icon: 'zap', parts: [fig(`${a.id}-cacheRead`, a.cacheRead ?? 0, 'tokens')] },
+            { label: 'Cache write', icon: 'database', parts: [fig(`${a.id}-cacheWrite`, a.cacheWrite ?? 0, 'tokens')] },
+            ...(a.usd > 0 ? [{ label: 'Cost', icon: 'coin' as const, parts: [cash(`${a.id}-usd`, a.usd)] }] : []),
+          ] satisfies Stat[])),
+      ...(advised
+        ? [
+            {
+              label: prettify(advised.model),
+              icon: 'sparkle' as const,
+              parts: [
+                fig(`${a.id}-advisor-calls`, advised.calls, 'int'),
+                plural(advised.calls, ' call', ' calls'),
+                ...(advised.usd === null ? [] : [' · ', cash(`${a.id}-advisor-usd`, advised.usd)]),
+              ],
+            },
+          ]
+        : []),
+    ]
+    const left = a.cacheAt == null ? 0 : Math.max(0, a.cacheAt + a.cacheTtlMs - t)
+    return {
+      id: a.id,
+      type: a.type,
+      description: a.description && a.description !== a.type ? a.description : '',
+      state,
+      stateText,
+      elapsed: a.doneAt !== null || t > 0 ? formatElapsed((a.doneAt ?? t) - a.startedAt) : null,
+      model: a.model ? [prettify(a.model), a.effort].filter(Boolean).join(' · ') : null,
+      calls: (a.calls ?? 0) > 0 ? [fig(`${a.id}-calls`, a.calls, 'int'), plural(a.calls, ' call', ' calls')] : [],
+      stats,
+      cache:
+        a.cacheAt == null
+          ? null
+          : {
+              percent: (left / a.cacheTtlMs) * 100,
+              tone: left === 0 || a.doneAt !== null ? 'muted' : left < a.cacheTtlMs / 5 ? 'warn' : 'ok',
+              time: left > 0 ? formatElapsed(left) : 'cold',
+              isResumable: a.doneAt !== null && left > 0,
+            },
+      isArmed: x.armed === a.id,
+    }
+  })
+  const working = ags.filter(a => a.doneAt === null).length
+  section('AGENTS', working > 0 ? `${working} working` : ags.length > 0 ? `${ags.length} done` : 'None running', working > 0 ? 'accent' : 'muted', { kind: 'agents', agents: agentFacts })
+
+  return {
+    sections,
+    version: m?.version ?? null,
+    changelog: CHANGELOG,
+  }
+}
+
 type Span = {
   text: string
   color?: string
@@ -1164,7 +1422,7 @@ type Span = {
 }
 type Count = { key: string; value: number; figure: Figure; before: string; after: string }
 type Pair = [Span[], Span[]]
-type CostPart = { label: string; usd: number; color: string }
+type CostPart = { label: string; usd: number; tone: Tone; color: string }
 type Row = { section: number; label: string; content: Span[]; isTight?: boolean }
 type Section = { name: string; summary: string; tint?: string; rows: number; body: (clip?: number) => JSX.Element }
 
@@ -1397,9 +1655,9 @@ function pathRow(P: Palette, p: Place | null, room = Infinity): Span[] {
   ])
 }
 
-async function toggleFold($: $, name: string): Promise<void> {
+async function toggleFold($: $, name: string, isAnimated = true): Promise<void> {
   const wasFolded = (await read($, folded)).includes(name)
-  const list = await animate($, `fold-${name}`, wasFolded ? 1 : 0, true, () => update($, folded, xs => (wasFolded ? xs.filter(x => x !== name) : [...xs, name])))
+  const list = await animate($, `fold-${name}`, wasFolded ? 1 : 0, isAnimated, () => update($, folded, xs => (wasFolded ? xs.filter(x => x !== name) : [...xs, name])))
   await $.store.set('folded', list).catch(() => undefined)
 }
 
@@ -1548,7 +1806,7 @@ async function viewAgent($: $, agent?: Agent): Promise<void> {
 
 let disarm: { cancel: () => void } | null = null
 
-async function stopAgent($: $, agent: Agent): Promise<void> {
+async function stopAgent($: $, agent: Agent, isAnimated = true): Promise<void> {
   disarm?.cancel()
   disarm = null
   if ((await read($, stopArmed)) !== agent.id) {
@@ -1562,14 +1820,17 @@ async function stopAgent($: $, agent: Agent): Promise<void> {
   }
   await update($, stopArmed, () => null)
   halting.add(agent.id)
-  await move($, `halt-${agent.id}`, 1)
+  if (isAnimated) await move($, `halt-${agent.id}`, 1)
+  else $.ui.invalidate('ui.render')
+  const [stop, confirm] = isAnimated ? ['■ Stop', '■ Confirm'] : ['Stop', 'Confirm stop']
   const r = await $.tool
-    .call({ tool: 'TaskStop', task_id: agent.id, consent: `The user pressed "■ Stop" then "■ Confirm" in the pitwall panel to stop agent ${agent.id}` })
+    .call({ tool: 'TaskStop', task_id: agent.id, consent: `The user pressed "${stop}" then "${confirm}" in the pitwall panel to stop agent ${agent.id}` })
     .catch(() => null)
   const refusal = r === null ? 'Claude Code cannot stop agents here' : (r.deny ?? (r.isError ? (r.text ?? `The ${agent.type} agent did not stop`) : undefined))
   if (refusal !== undefined) {
     halting.delete(agent.id)
-    await move($, `halt-${agent.id}`, 0)
+    if (isAnimated) await move($, `halt-${agent.id}`, 0)
+    else $.ui.invalidate('ui.render')
     $.ui.toast(refusal)
   }
   await refreshAgents($)
@@ -1578,13 +1839,14 @@ async function stopAgent($: $, agent: Agent): Promise<void> {
 const halting = new Set<string>()
 const leaving = new Set<string>()
 
-async function dismissAgent($: $, id: string): Promise<void> {
+async function dismissAgent($: $, id: string, isAnimated = true): Promise<void> {
   if ((await read($, stopArmed)) === id) {
     disarm?.cancel()
     disarm = null
     await update($, stopArmed, () => null)
   }
-  await dropAgent($, id)
+  if (isAnimated) await dropAgent($, id)
+  else if (!gone.has(id)) await forget($, [id])
 }
 
 async function dropAgent($: $, id: string): Promise<void> {
@@ -1602,10 +1864,13 @@ async function forget($: $, ids: string[]): Promise<void> {
   await update($, agents, list => list.filter(a => !ids.includes(a.id)))
 }
 
-async function togglePanel($: $): Promise<void> {
+async function togglePanel($: $, isAnimated = true): Promise<void> {
   const [panes, moving] = await Promise.all([$.ui.panes(), read($, motion)])
-  if (!panes.some(pane => pane.id === PANE)) await openPanel($)
-  else if (moving.panel?.to === 0) {
+  if (!panes.some(pane => pane.id === PANE)) await openPanel($, isAnimated)
+  else if (!isAnimated) {
+    await update($, panelClosed, () => true)
+    await $.ui.close({ id: PANE }).catch(() => undefined)
+  } else if (moving.panel?.to === 0) {
     await update($, panelClosed, () => false)
     await move($, 'panel', 1)
   } else {
@@ -1617,9 +1882,9 @@ async function togglePanel($: $): Promise<void> {
 
 const offPanel = ({ openness }: Motion) => (1 - openness) ** 3
 
-async function openPanel($: $): Promise<boolean> {
+async function openPanel($: $, isAnimated = true): Promise<boolean> {
   await update($, panelClosed, () => false)
-  await move($, 'panel', 1)
+  if (isAnimated) await move($, 'panel', 1)
   return (await $.ui.open({ id: PANE, title: 'SIDEBAR', focus: true, columns: PANE_COLUMNS })).isPlaced
 }
 
@@ -1734,20 +1999,31 @@ function spendClass(source: unknown): keyof Spend {
   return 'background'
 }
 
-function costParts(P: Palette, x: Spend, total: number, advisor: number, agentsAdvisor: number): CostPart[] {
+function costParts(x: Spend, total: number, advisor: number, agentsAdvisor: number): Omit<CostPart, 'color'>[] {
   if (x.main + x.agents + x.background === 0) return []
   const earlier = Math.max(0, total - x.main - x.agents - x.background)
   const advisorUsd = Math.min(Math.max(0, advisor), x.main + earlier)
   const advisorFromMain = Math.min(x.main, advisorUsd)
   const advisorFromEarlier = advisorUsd - advisorFromMain
   const advisorFromAgents = Math.min(Math.max(0, agentsAdvisor), x.agents)
-  return [
-    { label: 'main', usd: x.main - advisorFromMain, color: P.accent },
-    { label: 'advisor', usd: advisorUsd + advisorFromAgents, color: P.alt },
-    { label: 'agents', usd: x.agents - advisorFromAgents, color: P.info },
-    { label: 'background', usd: x.background, color: P.cool },
-    { label: 'earlier', usd: earlier - advisorFromEarlier, color: P.muted },
-  ].filter(part => part.usd >= 0.00005)
+  const parts: Omit<CostPart, 'color'>[] = [
+    { label: 'main', usd: x.main - advisorFromMain, tone: 'accent' },
+    { label: 'advisor', usd: advisorUsd + advisorFromAgents, tone: 'alt' },
+    { label: 'agents', usd: x.agents - advisorFromAgents, tone: 'info' },
+    { label: 'background', usd: x.background, tone: 'cool' },
+    { label: 'earlier', usd: earlier - advisorFromEarlier, tone: 'muted' },
+  ]
+  return parts.filter(part => part.usd >= 0.00005)
+}
+
+function cachePrices(c: Cache, tokens: number | null): { reread: number | null; rewrite: number | null } {
+  const price = priceOf(c.model)
+  if (tokens === null || price === undefined) return { reread: null, rewrite: null }
+  const mult = orgPricing?.multiplier ?? 1
+  return {
+    reread: priceCall(price, { cache_read_input_tokens: tokens }) * mult,
+    rewrite: priceCall(price, { cache_creation_input_tokens: tokens, cache_creation: { ephemeral_1h_input_tokens: c.ttlMs === HOUR ? tokens : 0 } }) * mult,
+  }
 }
 
 function carriedRate(kept: unknown, t: number): RateWindow[] {
@@ -1760,16 +2036,17 @@ function carriedRate(kept: unknown, t: number): RateWindow[] {
   })
 }
 
-function rateFacts(P: Palette, w: RateWindow, t: number) {
+function rateFacts(w: RateWindow, t: number) {
   const [name, span] = RATE[w.kind] ?? [w.kind, 0]
   const pct = Math.round(w.percentUsed)
   const remaining = w.resetsAt ? Math.floor((Date.parse(w.resetsAt) - t) / 1000) : NaN
   const isInWindow = remaining > 0 && remaining <= span
   const pace = isInWindow ? Math.floor(((span - remaining) * 100) / span) : null
+  const tone: 'ok' | 'warn' | 'bad' = pct >= 80 ? 'bad' : pct >= 50 ? 'warn' : 'ok'
   return {
     name,
     pct,
-    color: pct >= 80 ? P.bad : pct >= 50 ? P.warn : P.ok,
+    tone,
     pace,
     burn: pace === null ? 0 : pct - pace,
     remaining: isInWindow ? remaining : null,
